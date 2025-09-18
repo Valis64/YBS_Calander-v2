@@ -21,6 +21,8 @@ PENDING_COLOR = "#f0ad4e"
 
 DRAG_THRESHOLD = 5
 
+DateKey = Tuple[int, int, int]
+
 
 class YBSApp:
     """Encapsulates the Tkinter application."""
@@ -34,15 +36,20 @@ class YBSApp:
         self.client = YBSClient()
         self._queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
 
-        self._calendar_cells: Dict[int, Tuple[str, str]] = {}
-        self._calendar_cell_lookup: Dict[Tuple[str, str], int] = {}
-        self._calendar_assignments: Dict[int, List[Tuple[str, str]]] = {}
+        today = dt.date.today()
+        self._current_year = today.year
+        self._current_month = today.month
+
+        self._calendar_cells: Dict[DateKey, Tuple[str, str]] = {}
+        self._calendar_cell_lookup: Dict[Tuple[str, str], DateKey] = {}
+        self._calendar_assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
         self._calendar_hover: tuple[str, str] | None = None
         self._drag_data: dict[str, object] = {}
         self._reset_drag_state()
 
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
+        self.month_label_var = tk.StringVar(value=today.strftime("%B %Y"))
 
         self._configure_style()
         self._build_layout()
@@ -192,10 +199,32 @@ class YBSApp:
         )
         calendar_frame.configure(labelanchor="n")
 
-        today = dt.date.today()
-        month_name = today.strftime("%B %Y")
-        month_label = ttk.Label(calendar_frame, text=month_name, style="Dark.TLabel")
-        month_label.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header_frame = ttk.Frame(calendar_frame, style="Dark.TFrame")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header_frame.columnconfigure(1, weight=1)
+
+        previous_button = ttk.Button(
+            header_frame,
+            text="Previous",
+            style="Dark.TButton",
+            command=lambda: self._change_month(-1),
+        )
+        previous_button.grid(row=0, column=0, padx=(0, 10))
+
+        self.month_label = ttk.Label(
+            header_frame,
+            textvariable=self.month_label_var,
+            style="Dark.TLabel",
+        )
+        self.month_label.grid(row=0, column=1, sticky="ew")
+
+        next_button = ttk.Button(
+            header_frame,
+            text="Next",
+            style="Dark.TButton",
+            command=lambda: self._change_month(1),
+        )
+        next_button.grid(row=0, column=2, padx=(10, 0))
 
         columns = [f"day_{i}" for i in range(7)]
         self.calendar_tree = ttk.Treeview(
@@ -215,29 +244,73 @@ class YBSApp:
             self.calendar_tree.heading(column_id, text=day_name, anchor="center")
             self.calendar_tree.column(column_id, anchor="center", width=50, stretch=True)
 
-        month_structure = calendar.Calendar().monthdayscalendar(today.year, today.month)
-        self._calendar_cells.clear()
-        self._calendar_cell_lookup.clear()
-        self._calendar_assignments.clear()
-        self._calendar_hover = None
+        self._render_calendar()
 
-        for week in month_structure:
-            formatted_week = [str(day) if day != 0 else "" for day in week]
-            item_id = self.calendar_tree.insert("", tk.END, values=formatted_week)
-            for index, day in enumerate(week):
-                if day == 0:
-                    continue
-                column_name = columns[index]
-                self._calendar_cells[day] = (item_id, column_name)
-                self._calendar_cell_lookup[(item_id, column_name)] = day
-
-        self.calendar_tree.state(["disabled"])
         self.calendar_tree.grid(row=1, column=0, sticky="nsew")
 
         calendar_frame.columnconfigure(0, weight=1)
         calendar_frame.rowconfigure(1, weight=1)
 
         content_paned.add(calendar_frame, weight=2)
+
+    def _render_calendar(self) -> None:
+        year = self._current_year
+        month = self._current_month
+        first_of_month = dt.date(year, month, 1)
+        self.month_label_var.set(first_of_month.strftime("%B %Y"))
+
+        columns = list(self.calendar_tree["columns"])
+
+        self._remove_calendar_hover()
+
+        for item in self.calendar_tree.get_children():
+            self.calendar_tree.delete(item)
+
+        self._calendar_cells.clear()
+        self._calendar_cell_lookup.clear()
+
+        month_structure = calendar.Calendar().monthdayscalendar(year, month)
+
+        for week in month_structure:
+            row_values: List[str] = []
+            for day in week:
+                if day == 0:
+                    row_values.append("")
+                    continue
+                date_key = (year, month, day)
+                assignments = self._calendar_assignments.get(date_key, [])
+                row_values.append(self._format_day_cell(day, assignments))
+
+            while len(row_values) < len(columns):
+                row_values.append("")
+
+            item_id = self.calendar_tree.insert("", tk.END, values=row_values)
+            for index, day in enumerate(week):
+                if day == 0:
+                    continue
+                column_name = columns[index]
+                date_key = (year, month, day)
+                self._calendar_cells[date_key] = (item_id, column_name)
+                self._calendar_cell_lookup[(item_id, column_name)] = date_key
+
+        self.calendar_tree.state(["disabled"])
+        self._calendar_hover = None
+
+    def _change_month(self, delta_months: int) -> None:
+        year = self._current_year
+        month = self._current_month + delta_months
+
+        while month < 1:
+            month += 12
+            year -= 1
+        while month > 12:
+            month -= 12
+            year += 1
+
+        self._current_year = year
+        self._current_month = month
+        self._remove_calendar_hover()
+        self._render_calendar()
 
     def _reset_drag_state(self) -> None:
         self._drag_data = {
@@ -303,8 +376,17 @@ class YBSApp:
             return
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
-        if target_info and target_info.get("day") is not None:
-            day_value = int(target_info["day"])
+        normalized_key: DateKey | None = None
+        if target_info:
+            raw_key = target_info.get("date_key")
+            if isinstance(raw_key, tuple) and len(raw_key) == 3:
+                try:
+                    normalized_key = (int(raw_key[0]), int(raw_key[1]), int(raw_key[2]))
+                except (TypeError, ValueError):
+                    normalized_key = None
+
+        if normalized_key is not None:
+            year, month, day_value = normalized_key
             values = self._drag_data.get("values", ())
             if not isinstance(values, (tuple, list)) or not values:
                 self._queue.put(
@@ -322,13 +404,20 @@ class YBSApp:
                 message = f"Assigned order {order_number}"
                 if company:
                     message += f" ({company})"
-                message += f" to day {day_value}."
+                try:
+                    display_date = dt.date(year, month, day_value)
+                except ValueError:
+                    display_date = None
+                if display_date is not None:
+                    message += f" to {display_date.strftime('%B %d, %Y')}."
+                else:
+                    message += f" to day {day_value}."
                 self._queue.put(
                     (
                         "calendar_drop",
                         True,
                         message,
-                        {"day": day_value, "values": order_values},
+                        {"date_key": normalized_key, "values": order_values},
                     )
                 )
         else:
@@ -416,8 +505,14 @@ class YBSApp:
             return {"item": row_id, "column": column, "day": None}
 
         column_name = columns[column_index]
-        day_value = self._calendar_cell_lookup.get((row_id, column_name))
-        return {"item": row_id, "column": column_name, "day": day_value}
+        date_key = self._calendar_cell_lookup.get((row_id, column_name))
+        day_value = date_key[2] if date_key else None
+        return {
+            "item": row_id,
+            "column": column_name,
+            "day": day_value,
+            "date_key": date_key,
+        }
 
     def _update_calendar_hover(self, target_info: Dict[str, object] | None) -> None:
         if not target_info or not target_info.get("item"):
@@ -450,6 +545,9 @@ class YBSApp:
             return
 
         item_id, tag_name = self._calendar_hover
+        if not self.calendar_tree.exists(item_id):
+            self._calendar_hover = None
+            return
         current_tags = set(self.calendar_tree.item(item_id, "tags") or ())
         if tag_name in current_tags:
             current_tags.remove(tag_name)
@@ -475,28 +573,42 @@ class YBSApp:
         if not isinstance(payload, dict):
             return
 
-        day_value = payload.get("day")
+        date_key = payload.get("date_key")
         values = payload.get("values")
-        if not isinstance(day_value, int) or not isinstance(values, (tuple, list)):
+        if (
+            not isinstance(date_key, tuple)
+            or len(date_key) != 3
+            or not isinstance(values, (tuple, list))
+        ):
+            return
+
+        try:
+            normalized_key = (int(date_key[0]), int(date_key[1]), int(date_key[2]))
+        except (TypeError, ValueError):
             return
 
         order_values = tuple(str(value) for value in values)
-        self._assign_order_to_day(day_value, order_values)
+        self._assign_order_to_day(normalized_key, order_values)
 
-    def _assign_order_to_day(self, day: int, order_values: Tuple[str, ...]) -> None:
-        target = self._calendar_cells.get(day)
-        if not target:
-            return
-
-        item_id, column_name = target
+    def _assign_order_to_day(self, date_key: DateKey, order_values: Tuple[str, ...]) -> None:
         order_number = order_values[0] if len(order_values) > 0 else ""
         company = order_values[1] if len(order_values) > 1 else ""
         normalized: Tuple[str, str] = (str(order_number), str(company))
 
-        assignments = self._calendar_assignments.setdefault(day, [])
+        assignments = self._calendar_assignments.setdefault(date_key, [])
         if normalized not in assignments:
             assignments.append(normalized)
 
+        self._update_day_cell_display(date_key)
+
+    def _update_day_cell_display(self, date_key: DateKey) -> None:
+        target = self._calendar_cells.get(date_key)
+        if not target:
+            return
+
+        item_id, column_name = target
+        _, _, day = date_key
+        assignments = self._calendar_assignments.get(date_key, [])
         display_text = self._format_day_cell(day, assignments)
         self.calendar_tree.set(item_id, column_name, display_text)
 
