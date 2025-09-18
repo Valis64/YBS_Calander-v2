@@ -244,6 +244,8 @@ class YBSApp:
             self.calendar_tree.heading(column_id, text=day_name, anchor="center")
             self.calendar_tree.column(column_id, anchor="center", width=50, stretch=True)
 
+        self.calendar_tree.bind("<Double-1>", self._on_calendar_double_click)
+
         self._render_calendar()
 
         self.calendar_tree.grid(row=1, column=0, sticky="nsew")
@@ -295,6 +297,206 @@ class YBSApp:
 
         self.calendar_tree.state(["disabled"])
         self._calendar_hover = None
+
+    def _on_calendar_double_click(self, event: tk.Event) -> None:
+        region = self.calendar_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        row_id = self.calendar_tree.identify_row(event.y)
+        column = self.calendar_tree.identify_column(event.x)
+        if not row_id or not column:
+            return
+
+        try:
+            column_index = int(column.lstrip("#")) - 1
+        except ValueError:
+            return
+
+        columns = list(self.calendar_tree["columns"])
+        if column_index < 0 or column_index >= len(columns):
+            return
+
+        column_name = columns[column_index]
+        date_key = self._calendar_cell_lookup.get((row_id, column_name))
+        if not date_key:
+            return
+
+        try:
+            normalized_key: DateKey = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            return
+
+        self._open_day_details(normalized_key)
+
+    def _open_day_details(self, date_key: DateKey) -> None:
+        window = tk.Toplevel(self.root)
+        window.title(self._format_date_label(date_key))
+        window.configure(bg=BACKGROUND_COLOR)
+        window.transient(self.root)
+        window.resizable(False, False)
+
+        frame = ttk.Frame(window, style="Dark.TFrame", padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        date_label = ttk.Label(
+            frame,
+            text=f"Orders for {self._format_date_label(date_key)}",
+            style="Dark.TLabel",
+        )
+        date_label.grid(row=0, column=0, columnspan=2, sticky="w")
+
+        info_var = tk.StringVar(value="")
+        info_label = ttk.Label(frame, textvariable=info_var, style="Dark.TLabel")
+        info_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 10))
+
+        listbox = tk.Listbox(
+            frame,
+            height=8,
+            selectmode=tk.SINGLE,
+            activestyle="none",
+            exportselection=False,
+        )
+        listbox.configure(
+            bg="#102a54",
+            fg=TEXT_COLOR,
+            highlightbackground=ACCENT_COLOR,
+            highlightcolor=ACCENT_COLOR,
+            selectbackground="#1e90ff",
+            relief="flat",
+        )
+        listbox.grid(row=2, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=listbox.yview)
+        listbox.config(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=2, column=1, sticky="ns")
+
+        button_frame = ttk.Frame(frame, style="Dark.TFrame")
+        button_frame.grid(row=3, column=0, columnspan=2, sticky="e", pady=(15, 0))
+
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+
+        def format_assignment(assignment: Tuple[str, str]) -> str:
+            order_number = assignment[0].strip()
+            company = assignment[1].strip()
+            if order_number and company:
+                return f"{order_number} - {company}"
+            if order_number:
+                return order_number
+            if company:
+                return company
+            return "Unnamed order"
+
+        def update_button_states(*_: object) -> None:
+            assignments = self._calendar_assignments.get(date_key, [])
+            has_assignments = bool(assignments)
+            info_var.set("" if has_assignments else "No orders scheduled for this day.")
+            clear_state = tk.NORMAL if has_assignments else tk.DISABLED
+            clear_button.config(state=clear_state)
+            if has_assignments and listbox.curselection():
+                remove_button.config(state=tk.NORMAL)
+            else:
+                remove_button.config(state=tk.DISABLED)
+
+        def refresh_list(select_index: int | None = None) -> None:
+            assignments = self._calendar_assignments.get(date_key, [])
+            listbox.delete(0, tk.END)
+            for assignment in assignments:
+                listbox.insert(tk.END, format_assignment(assignment))
+            listbox.selection_clear(0, tk.END)
+            if (
+                select_index is not None
+                and 0 <= select_index < len(assignments)
+                and assignments
+            ):
+                listbox.selection_set(select_index)
+            update_button_states()
+
+        def remove_selected() -> None:
+            selection = listbox.curselection()
+            if not selection:
+                self._set_status(FAIL_COLOR, "Please select an order to remove.")
+                return
+
+            index = selection[0]
+            assignments = self._calendar_assignments.get(date_key, [])
+            if not assignments:
+                self._set_status(FAIL_COLOR, "No orders scheduled for this day.")
+                refresh_list()
+                return
+
+            if index < 0 or index >= len(assignments):
+                self._set_status(FAIL_COLOR, "Unable to determine which order to remove.")
+                update_button_states()
+                return
+
+            removed_assignment = assignments.pop(index)
+            if assignments:
+                self._calendar_assignments[date_key] = assignments
+            else:
+                self._calendar_assignments.pop(date_key, None)
+
+            self._update_day_cell_display(date_key)
+            next_index = min(index, len(assignments) - 1)
+            refresh_list(select_index=next_index if assignments else None)
+
+            message = self._format_removal_message(date_key, removed_assignment)
+            self._set_status(SUCCESS_COLOR, message)
+
+        def clear_day() -> None:
+            assignments = self._calendar_assignments.get(date_key, [])
+            if not assignments:
+                self._set_status(FAIL_COLOR, "No orders scheduled for this day.")
+                refresh_list()
+                return
+
+            removed_count = len(assignments)
+            self._calendar_assignments.pop(date_key, None)
+            self._update_day_cell_display(date_key)
+            refresh_list()
+
+            date_label_text = self._format_date_label(date_key)
+            plural = "s" if removed_count != 1 else ""
+            message = f"Cleared {removed_count} order{plural} from {date_label_text}."
+            self._set_status(SUCCESS_COLOR, message)
+
+        def close_dialog() -> None:
+            window.destroy()
+
+        remove_button = ttk.Button(
+            button_frame,
+            text="Remove Selected",
+            style="Dark.TButton",
+            command=remove_selected,
+        )
+        remove_button.grid(row=0, column=0, padx=(0, 10))
+
+        clear_button = ttk.Button(
+            button_frame,
+            text="Clear Day",
+            style="Dark.TButton",
+            command=clear_day,
+        )
+        clear_button.grid(row=0, column=1, padx=(0, 10))
+
+        close_button = ttk.Button(
+            button_frame,
+            text="Close",
+            style="Dark.TButton",
+            command=close_dialog,
+        )
+        close_button.grid(row=0, column=2)
+
+        listbox.bind("<<ListboxSelect>>", update_button_states)
+        window.protocol("WM_DELETE_WINDOW", close_dialog)
+
+        refresh_list()
+        window.focus_set()
 
     def _change_month(self, delta_months: int) -> None:
         year = self._current_year
@@ -628,6 +830,36 @@ class YBSApp:
             return str(day)
 
         return f"{day} ({', '.join(labels)})"
+
+    def _format_date_label(self, date_key: DateKey) -> str:
+        try:
+            year, month, day = (int(date_key[0]), int(date_key[1]), int(date_key[2]))
+            display_date = dt.date(year, month, day)
+        except (TypeError, ValueError):
+            year, month, day = date_key
+            return f"{month:02d}/{day:02d}/{year}"
+        else:
+            return display_date.strftime("%B %d, %Y")
+
+    def _format_removal_message(
+        self, date_key: DateKey, assignment: Tuple[str, str]
+    ) -> str:
+        order_number = assignment[0].strip()
+        company = assignment[1].strip()
+
+        if order_number:
+            message = f"Removed order {order_number}"
+        else:
+            message = "Removed order"
+
+        if company:
+            if order_number:
+                message += f" ({company})"
+            else:
+                message += f" for {company}"
+
+        message += f" from {self._format_date_label(date_key)}."
+        return message
 
     def _on_login_clicked(self) -> None:
         username = self.username_var.get().strip()
