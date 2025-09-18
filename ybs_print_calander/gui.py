@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import calendar
+import datetime as dt
 import queue
 import threading
 import tkinter as tk
@@ -58,6 +60,7 @@ class YBSApp:
             background=BACKGROUND_COLOR,
             foreground=TEXT_COLOR,
         )
+        style.configure("Dark.TPanedwindow", background=BACKGROUND_COLOR)
         style.configure(
             "Dark.TButton",
             background=ACCENT_COLOR,
@@ -134,14 +137,16 @@ class YBSApp:
         self.status_message = ttk.Label(login_frame, text="", style="Dark.TLabel")
         self.status_message.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
 
+        content_paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL, style="Dark.TPanedwindow")
+        content_paned.pack(fill=tk.BOTH, expand=True)
+
         table_frame = ttk.LabelFrame(
-            container,
+            content_paned,
             text="Orders",
             style="Dark.TLabelframe",
             padding=10,
         )
         table_frame.configure(labelanchor="n")
-        table_frame.pack(fill=tk.BOTH, expand=True)
 
         # Treeview and scrollbar
         self.tree = ttk.Treeview(
@@ -163,6 +168,49 @@ class YBSApp:
 
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
+
+        content_paned.add(table_frame, weight=3)
+
+        calendar_frame = ttk.LabelFrame(
+            content_paned,
+            text="Calendar",
+            style="Dark.TLabelframe",
+            padding=10,
+        )
+        calendar_frame.configure(labelanchor="n")
+
+        today = dt.date.today()
+        month_name = today.strftime("%B %Y")
+        month_label = ttk.Label(calendar_frame, text=month_name, style="Dark.TLabel")
+        month_label.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        columns = [f"day_{i}" for i in range(7)]
+        self.calendar_tree = ttk.Treeview(
+            calendar_frame,
+            columns=columns,
+            show="headings",
+            style="Dark.Treeview",
+            height=7,
+            selectmode="none",
+        )
+
+        for index, day_name in enumerate(calendar.day_abbr):
+            column_id = columns[index]
+            self.calendar_tree.heading(column_id, text=day_name, anchor="center")
+            self.calendar_tree.column(column_id, anchor="center", width=50, stretch=True)
+
+        month_structure = calendar.Calendar().monthdayscalendar(today.year, today.month)
+        for week in month_structure:
+            formatted_week = [day if day != 0 else "" for day in week]
+            self.calendar_tree.insert("", tk.END, values=formatted_week)
+
+        self.calendar_tree.state(["disabled"])
+        self.calendar_tree.grid(row=1, column=0, sticky="nsew")
+
+        calendar_frame.columnconfigure(0, weight=1)
+        calendar_frame.rowconfigure(1, weight=1)
+
+        content_paned.add(calendar_frame, weight=2)
 
     def _on_login_clicked(self) -> None:
         username = self.username_var.get().strip()
