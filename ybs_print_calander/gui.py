@@ -150,6 +150,15 @@ class YBSApp:
         )
         self.login_button.pack()
 
+        self.refresh_button = ttk.Button(
+            button_frame,
+            text="Refresh",
+            style="Dark.TButton",
+            command=self._on_refresh_clicked,
+            state=tk.DISABLED,
+        )
+        self.refresh_button.pack(pady=(8, 0))
+
         self.status_message = ttk.Label(login_frame, text="", style="Dark.TLabel")
         self.status_message.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
 
@@ -870,6 +879,7 @@ class YBSApp:
             return
 
         self.login_button.config(state=tk.DISABLED)
+        self.refresh_button.config(state=tk.DISABLED)
         self._set_status(PENDING_COLOR, "Attempting login...")
 
         thread = threading.Thread(
@@ -882,6 +892,14 @@ class YBSApp:
     def _on_enter_pressed(self, event: object | None) -> None:
         self._on_login_clicked()
 
+    def _on_refresh_clicked(self) -> None:
+        self.login_button.config(state=tk.DISABLED)
+        self.refresh_button.config(state=tk.DISABLED)
+        self._set_status(PENDING_COLOR, "Refreshing orders...")
+
+        thread = threading.Thread(target=self._perform_refresh, daemon=True)
+        thread.start()
+
     def _set_status(self, color: str, message: str) -> None:
         self.status_canvas.itemconfigure(self.status_light, fill=color)
         self.status_message.config(text=message)
@@ -891,33 +909,72 @@ class YBSApp:
             self.client.login(username, password)
             orders = self.client.fetch_orders()
         except (AuthenticationError, NetworkError) as exc:
-            self._queue.put(("login_result", False, str(exc), []))
+            self._queue.put(("login_result", False, str(exc), [], "login"))
         except Exception as exc:  # pragma: no cover - defensive
-            self._queue.put(("login_result", False, f"Unexpected error: {exc}", []))
+            self._queue.put(("login_result", False, f"Unexpected error: {exc}", [], "login"))
         else:
-            self._queue.put(("login_result", True, "Login successful.", orders))
+            self._queue.put(("login_result", True, "Login successful.", orders, "login"))
+
+    def _perform_refresh(self) -> None:
+        try:
+            orders = self.client.fetch_orders()
+        except (AuthenticationError, NetworkError) as exc:
+            self._queue.put(("login_result", False, str(exc), [], "refresh"))
+        except Exception as exc:  # pragma: no cover - defensive
+            self._queue.put(("login_result", False, f"Unexpected error: {exc}", [], "refresh"))
+        else:
+            self._queue.put(("login_result", True, "Orders refreshed.", orders, "refresh"))
 
     def _poll_queue(self) -> None:
         try:
             while True:
-                event_type, success, message, payload = self._queue.get_nowait()
+                event = self._queue.get_nowait()
+                if not event:
+                    continue
+
+                event_type = event[0]
                 if event_type == "login_result":
-                    self._handle_login_result(bool(success), str(message), list(payload))
-                elif event_type == "calendar_drop":
-                    self._handle_calendar_drop(bool(success), str(message), payload)
+                    success = bool(event[1])
+                    message = str(event[2])
+                    payload = event[3] if len(event) > 3 else []
+                    extra = event[4] if len(event) > 4 else "login"
+                    operation = extra if isinstance(extra, str) else "login"
+
+                    orders: List[OrderRecord] = []
+                    if isinstance(payload, (list, tuple)):
+                        orders = list(payload)
+
+                    self._handle_login_result(success, message, orders, operation)
+                    continue
+
+                if event_type == "calendar_drop":
+                    success = bool(event[1]) if len(event) > 1 else False
+                    message = str(event[2]) if len(event) > 2 else ""
+                    payload = event[3] if len(event) > 3 else None
+                    self._handle_calendar_drop(success, message, payload)
         except queue.Empty:
             pass
         finally:
             self.root.after(100, self._poll_queue)
 
-    def _handle_login_result(self, success: bool, message: str, orders: List[OrderRecord]) -> None:
+    def _handle_login_result(
+        self, success: bool, message: str, orders: List[OrderRecord], operation: str = "login"
+    ) -> None:
         color = SUCCESS_COLOR if success else FAIL_COLOR
         self._set_status(color, message)
         self.login_button.config(state=tk.NORMAL)
+
+        operation_key = operation.lower() if isinstance(operation, str) else "login"
+
         if success:
+            self.refresh_button.config(state=tk.NORMAL)
             self._populate_orders(orders)
-            if not orders:
+            if operation_key == "login" and not orders:
                 self.status_message.config(text="Login successful, but no orders were found.")
+        else:
+            self.refresh_button.config(state=tk.DISABLED)
+            if operation_key == "login":
+                self.password_var.set("")
 
     def _populate_orders(self, orders: Iterable[OrderRecord]) -> None:
         for item in self.tree.get_children():
