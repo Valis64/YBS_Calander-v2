@@ -1608,10 +1608,10 @@ class YBSApp:
 
         return "break"
 
-    def _on_order_drag(self, event: tk.Event) -> None:
+    def _on_order_drag(self, event: tk.Event) -> str | None:
         items = self._drag_data.get("items")
         if not items:
-            return
+            return None
 
         if not self._drag_data.get("active"):
             start_x = int(self._drag_data.get("start_x", event.x_root))
@@ -1621,22 +1621,32 @@ class YBSApp:
                 or abs(event.y_root - start_y) >= DRAG_THRESHOLD
             ):
                 self._begin_drag()
-
-        if not self._drag_data.get("active"):
-            return
+                if self._drag_data.get("active"):
+                    self._position_drag_window(event.x_root, event.y_root)
+                    target_info = self._detect_calendar_target(
+                        event.x_root, event.y_root
+                    )
+                    self._update_calendar_hover(target_info)
+                    return "break"
+            return None
 
         self._position_drag_window(event.x_root, event.y_root)
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         self._update_calendar_hover(target_info)
+        return "break"
 
-    def _on_order_release(self, event: tk.Event) -> None:
+    def _on_order_release(self, event: tk.Event) -> str | None:
         items = self._drag_data.get("items")
+        drag_was_active = bool(self._drag_data.get("active"))
         if not items:
-            return
+            if drag_was_active:
+                self._end_drag()
+                return "break"
+            return None
 
-        if not self._drag_data.get("active"):
+        if not drag_was_active:
             self._end_drag()
-            return
+            return None
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
@@ -1689,6 +1699,7 @@ class YBSApp:
             )
 
         self._end_drag()
+        return "break"
 
     def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> str | None:
         self._end_drag()
@@ -1803,9 +1814,9 @@ class YBSApp:
 
         return "break"
 
-    def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> None:
+    def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> str | None:
         if self._drag_data.get("source") != "calendar":
-            return
+            return None
 
         try:
             normalized_date_key = (
@@ -1817,11 +1828,11 @@ class YBSApp:
             normalized_date_key = date_key
 
         if self._drag_data.get("source_date_key") != normalized_date_key:
-            return
+            return None
 
         items = self._drag_data.get("items")
         if not items:
-            return
+            return None
 
         if not self._drag_data.get("active"):
             start_x = int(self._drag_data.get("start_x", event.x_root))
@@ -1831,18 +1842,26 @@ class YBSApp:
                 or abs(event.y_root - start_y) >= DRAG_THRESHOLD
             ):
                 self._begin_drag()
-
-        if not self._drag_data.get("active"):
-            return
+                if self._drag_data.get("active"):
+                    self._position_drag_window(event.x_root, event.y_root)
+                    target_info = self._detect_calendar_target(
+                        event.x_root, event.y_root
+                    )
+                    self._update_calendar_hover(target_info)
+                    return "break"
+            return None
 
         self._position_drag_window(event.x_root, event.y_root)
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         self._update_calendar_hover(target_info)
+        return "break"
 
-    def _on_day_order_release(self, event: tk.Event, date_key: DateKey) -> None:
+    def _on_day_order_release(self, event: tk.Event, date_key: DateKey) -> str | None:
+        drag_was_active = bool(self._drag_data.get("active"))
+
         if self._drag_data.get("source") != "calendar":
             self._end_drag()
-            return
+            return "break" if drag_was_active else None
 
         try:
             normalized_date_key = (
@@ -1855,16 +1874,16 @@ class YBSApp:
 
         if self._drag_data.get("source_date_key") != normalized_date_key:
             self._end_drag()
-            return
+            return "break" if drag_was_active else None
 
         items = self._drag_data.get("items")
         if not items:
             self._end_drag()
-            return
+            return "break" if drag_was_active else None
 
-        if not self._drag_data.get("active"):
+        if not drag_was_active:
             self._end_drag()
-            return
+            return None
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
@@ -1958,6 +1977,7 @@ class YBSApp:
             )
 
         self._end_drag()
+        return "break"
 
     def _begin_drag(self) -> None:
         items = self._drag_data.get("items")
