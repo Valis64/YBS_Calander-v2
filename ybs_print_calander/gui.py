@@ -96,6 +96,8 @@ class YBSApp:
         self._state_save_after_id: str | None = None
         self._undo_stack: list[dict[str, Any]] = []
         self._undo_stack_limit = 100
+        self._redo_stack: list[dict[str, Any]] = []
+        self._redo_stack_limit = self._undo_stack_limit
 
         self._load_state()
         self._reset_drag_state()
@@ -111,6 +113,10 @@ class YBSApp:
         self._build_layout()
         self.root.bind_all("<Control-z>", self._undo_last_action)
         self.root.bind_all("<Command-z>", self._undo_last_action)
+        self.root.bind_all("<Control-Shift-Z>", self._redo_last_action)
+        self.root.bind_all("<Command-Shift-Z>", self._redo_last_action)
+        self.root.bind_all("<Control-y>", self._redo_last_action)
+        self.root.bind_all("<Command-y>", self._redo_last_action)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queue()
 
@@ -270,17 +276,18 @@ class YBSApp:
             return {"had_key": had_key, "previous": previous}
         return {"had_key": had_key, "previous": None}
 
-    def _push_undo_action(self, action: dict[str, Any]) -> None:
+    def _normalize_history_action(
+        self, action: dict[str, Any]
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
-            return
+            return None
 
         kind = action.get("kind")
-        normalized_action: dict[str, Any]
 
         if kind == "assignments":
             raw_dates = action.get("dates")
             if not isinstance(raw_dates, dict) or not raw_dates:
-                return
+                return None
 
             normalized_dates: dict[DateKey, dict[str, Any]] = {}
             for raw_key, info in raw_dates.items():
@@ -288,8 +295,9 @@ class YBSApp:
                 if normalized_key is None:
                     continue
 
-                had_key = bool(info.get("had_key"))
-                previous_raw = info.get("previous")
+                info_dict = info if isinstance(info, dict) else {}
+                had_key = bool(info_dict.get("had_key"))
+                previous_raw = info_dict.get("previous")
                 previous_list: list[Tuple[str, str]] | None = None
                 if isinstance(previous_raw, list):
                     previous_list = []
@@ -305,38 +313,57 @@ class YBSApp:
                 }
 
             if not normalized_dates:
-                return
+                return None
 
-            normalized_action = {"kind": "assignments", "dates": normalized_dates}
-        elif kind == "notes":
-            raw_key = action.get("date_key")
-            normalized_key = self._normalize_date_key(raw_key)
+            return {"kind": "assignments", "dates": normalized_dates}
+
+        if kind == "notes":
+            normalized_key = self._normalize_date_key(action.get("date_key"))
             if normalized_key is None:
-                return
+                return None
 
             had_key = bool(action.get("had_key"))
             previous_raw = action.get("previous")
-            previous_value: str | None
             if isinstance(previous_raw, str):
-                previous_value = previous_raw
+                previous_value: str | None = previous_raw
             elif previous_raw is None:
                 previous_value = None
             else:
                 previous_value = str(previous_raw)
 
-            normalized_action = {
+            return {
                 "kind": "notes",
                 "date_key": normalized_key,
                 "had_key": had_key,
                 "previous": previous_value,
             }
-        else:
+
+        return None
+
+    def _push_undo_action(
+        self, action: dict[str, Any], *, clear_redo: bool = True
+    ) -> None:
+        normalized_action = self._normalize_history_action(action)
+        if normalized_action is None:
             return
 
         self._undo_stack.append(normalized_action)
         limit = getattr(self, "_undo_stack_limit", 0)
         if isinstance(limit, int) and limit > 0 and len(self._undo_stack) > limit:
             del self._undo_stack[: len(self._undo_stack) - limit]
+
+        if clear_redo:
+            self._redo_stack.clear()
+
+    def _push_redo_action(self, action: dict[str, Any]) -> None:
+        normalized_action = self._normalize_history_action(action)
+        if normalized_action is None:
+            return
+
+        self._redo_stack.append(normalized_action)
+        limit = getattr(self, "_redo_stack_limit", 0)
+        if isinstance(limit, int) and limit > 0 and len(self._redo_stack) > limit:
+            del self._redo_stack[: len(self._redo_stack) - limit]
 
     def _undo_last_action(self, event: tk.Event | None = None) -> str | None:
         widget = getattr(event, "widget", None)
@@ -366,12 +393,18 @@ class YBSApp:
             entries = action.get("dates")
             if isinstance(entries, dict):
                 restored_labels: list[str] = []
+                redo_dates: dict[DateKey, dict[str, Any]] = {}
                 for raw_key, info in entries.items():
                     normalized_key = self._normalize_date_key(raw_key)
                     if normalized_key is None:
                         continue
 
-                    previous_raw = info.get("previous")
+                    redo_dates[normalized_key] = self._capture_assignments_state(
+                        normalized_key
+                    )
+
+                    info_dict = info if isinstance(info, dict) else {}
+                    previous_raw = info_dict.get("previous")
                     restored_assignments: list[Tuple[str, str]] = []
                     if isinstance(previous_raw, list):
                         for entry in previous_raw:
@@ -389,6 +422,9 @@ class YBSApp:
                     restored_labels.append(self._format_date_label(normalized_key))
                     restored = True
 
+                if redo_dates:
+                    self._push_redo_action({"kind": "assignments", "dates": redo_dates})
+
                 if restored_labels:
                     if len(restored_labels) == 1:
                         status_message = (
@@ -403,6 +439,16 @@ class YBSApp:
         elif kind == "notes":
             normalized_key = self._normalize_date_key(action.get("date_key"))
             if normalized_key is not None:
+                redo_snapshot = self._capture_notes_state(normalized_key)
+                self._push_redo_action(
+                    {
+                        "kind": "notes",
+                        "date_key": normalized_key,
+                        "had_key": bool(redo_snapshot.get("had_key")),
+                        "previous": redo_snapshot.get("previous"),
+                    }
+                )
+
                 previous_raw = action.get("previous")
                 had_key = bool(action.get("had_key"))
 
@@ -454,11 +500,159 @@ class YBSApp:
 
         return "break" if event is not None else None
 
+    def _redo_last_action(self, event: tk.Event | None = None) -> str | None:
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Text):
+            try:
+                redo_enabled = bool(widget.cget("undo"))
+            except tk.TclError:
+                redo_enabled = False
+            if redo_enabled:
+                try:
+                    widget.edit_redo()
+                except tk.TclError:
+                    pass
+                else:
+                    return "break"
+
+        if not self._redo_stack:
+            self._set_status(FAIL_COLOR, "Nothing to redo.")
+            return "break" if event is not None else None
+
+        action = self._redo_stack.pop()
+        kind = action.get("kind")
+        applied = False
+        status_message = ""
+
+        if kind == "assignments":
+            entries = action.get("dates")
+            if isinstance(entries, dict):
+                undo_entries: dict[DateKey, dict[str, Any]] = {}
+                restored_labels: list[str] = []
+                for raw_key, info in entries.items():
+                    normalized_key = self._normalize_date_key(raw_key)
+                    if normalized_key is None:
+                        continue
+
+                    undo_entries[normalized_key] = self._capture_assignments_state(
+                        normalized_key
+                    )
+
+                    info_dict = info if isinstance(info, dict) else {}
+                    previous_raw = info_dict.get("previous")
+                    restored_assignments: list[Tuple[str, str]] = []
+                    if isinstance(previous_raw, list):
+                        for entry in previous_raw:
+                            if isinstance(entry, (list, tuple)):
+                                first = str(entry[0]) if len(entry) > 0 else ""
+                                second = str(entry[1]) if len(entry) > 1 else ""
+                                restored_assignments.append((first, second))
+
+                    if restored_assignments:
+                        self._calendar_assignments[normalized_key] = restored_assignments
+                    else:
+                        self._calendar_assignments.pop(normalized_key, None)
+
+                    self._update_day_cell_display(normalized_key)
+                    restored_labels.append(self._format_date_label(normalized_key))
+                    applied = True
+
+                if undo_entries:
+                    self._push_undo_action(
+                        {"kind": "assignments", "dates": undo_entries},
+                        clear_redo=False,
+                    )
+
+                if restored_labels:
+                    if len(restored_labels) == 1:
+                        status_message = (
+                            f"Redo: restored assignments for {restored_labels[0]}."
+                        )
+                    else:
+                        status_message = (
+                            "Redo: restored assignments for "
+                            + ", ".join(restored_labels)
+                            + "."
+                        )
+
+        elif kind == "notes":
+            normalized_key = self._normalize_date_key(action.get("date_key"))
+            if normalized_key is not None:
+                undo_snapshot = self._capture_notes_state(normalized_key)
+                self._push_undo_action(
+                    {
+                        "kind": "notes",
+                        "date_key": normalized_key,
+                        "had_key": bool(undo_snapshot.get("had_key")),
+                        "previous": undo_snapshot.get("previous"),
+                    },
+                    clear_redo=False,
+                )
+
+                previous_raw = action.get("previous")
+                had_key = bool(action.get("had_key"))
+
+                if isinstance(previous_raw, str):
+                    restored_text = previous_raw
+                    self._calendar_notes[normalized_key] = restored_text
+                elif previous_raw is None and not had_key:
+                    restored_text = ""
+                    self._calendar_notes.pop(normalized_key, None)
+                else:
+                    restored_text = str(previous_raw) if previous_raw is not None else ""
+                    if restored_text:
+                        self._calendar_notes[normalized_key] = restored_text
+                    else:
+                        self._calendar_notes.pop(normalized_key, None)
+
+                day_cell = self._day_cells.get(normalized_key)
+                if day_cell:
+                    notes_widget = day_cell.notes_text
+                    try:
+                        focused_widget = self.root.focus_get()
+                    except tk.TclError:
+                        focused_widget = None
+
+                    has_focus = focused_widget is notes_widget
+                    if widget is notes_widget:
+                        has_focus = True
+
+                    notes_widget.delete("1.0", tk.END)
+                    if restored_text:
+                        notes_widget.insert("1.0", restored_text)
+                    if has_focus:
+                        try:
+                            notes_widget.focus_set()
+                        except tk.TclError:
+                            pass
+
+                status_message = (
+                    f"Redo: restored notes for {self._format_date_label(normalized_key)}."
+                )
+                applied = True
+
+        if applied:
+            self._schedule_state_save()
+            if status_message:
+                self._set_status(SUCCESS_COLOR, status_message)
+        else:
+            self._set_status(FAIL_COLOR, "Nothing to redo.")
+
+        return "break" if event is not None else None
+
     def _invoke_text_widget_undo(self, event: tk.Event) -> None:
         widget = getattr(event, "widget", None)
         if isinstance(widget, tk.Text):
             try:
                 widget.edit_undo()
+            except tk.TclError:
+                pass
+
+    def _invoke_text_widget_redo(self, event: tk.Event) -> None:
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Text):
+            try:
+                widget.edit_redo()
             except tk.TclError:
                 pass
 
@@ -844,6 +1038,30 @@ class YBSApp:
                 notes_text.bind(
                     "<Command-z>",
                     lambda event: (self._invoke_text_widget_undo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Control-Shift-Z>",
+                    lambda event: (self._invoke_text_widget_redo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Command-Shift-Z>",
+                    lambda event: (self._invoke_text_widget_redo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Control-y>",
+                    lambda event: (self._invoke_text_widget_redo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Command-y>",
+                    lambda event: (self._invoke_text_widget_redo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Control-Y>",
+                    lambda event: (self._invoke_text_widget_redo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Command-Y>",
+                    lambda event: (self._invoke_text_widget_redo(event), "break")[1],
                 )
 
                 orders_list = tk.Listbox(
