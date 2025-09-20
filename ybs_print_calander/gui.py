@@ -73,6 +73,7 @@ class YBSApp:
         self._calendar_notes: Dict[DateKey, str] = {}
         self._calendar_assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
         self._calendar_hover: DateKey | None = None
+        self._active_day_header: DateKey | None = None
         self._drag_data: dict[str, object] = {}
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -441,6 +442,8 @@ class YBSApp:
         for date_key, day_cell in list(self._day_cells.items()):
             self._save_day_notes(date_key)
             day_cell.frame.destroy()
+            if self._active_day_header == date_key:
+                self._active_day_header = None
 
         self._day_cells.clear()
 
@@ -503,6 +506,27 @@ class YBSApp:
                     pady=2,
                 )
                 header_label.grid(row=0, column=0, sticky="ew")
+                try:
+                    header_label.configure(takefocus=True)
+                except tk.TclError:
+                    pass
+
+                header_label.bind(
+                    "<Button-1>",
+                    lambda event, key=date_key: self._on_day_header_click(event, key),
+                )
+                header_label.bind(
+                    "<FocusIn>",
+                    lambda event, key=date_key: self._on_day_header_focus(key),
+                )
+                header_label.bind(
+                    "<Delete>",
+                    lambda event, key=date_key: self._on_day_clear_request(event, key),
+                )
+                header_label.bind(
+                    "<Destroy>",
+                    lambda event, key=date_key: self._on_day_header_destroy(event, key),
+                )
 
                 notes_text = tk.Text(
                     cell_frame,
@@ -587,6 +611,56 @@ class YBSApp:
                 self._update_day_cell_display(date_key)
 
         self._calendar_hover = None
+
+    def _set_active_day_header(self, date_key: DateKey | None) -> None:
+        self._active_day_header = date_key
+
+    def _on_day_header_click(self, event: tk.Event, date_key: DateKey) -> None:
+        self._set_active_day_header(date_key)
+        widget = getattr(event, "widget", None)
+        if widget is not None:
+            try:
+                widget.focus_set()
+            except tk.TclError:
+                pass
+
+    def _on_day_header_focus(self, date_key: DateKey) -> None:
+        self._set_active_day_header(date_key)
+
+    def _on_day_header_destroy(
+        self, event: tk.Event | None, date_key: DateKey
+    ) -> None:
+        widget = getattr(event, "widget", None)
+        if widget is not None:
+            try:
+                widget.unbind("<Delete>")
+            except tk.TclError:
+                pass
+        if self._active_day_header == date_key:
+            self._set_active_day_header(None)
+
+    def _on_day_clear_request(
+        self, event: tk.Event | None, date_key: DateKey | None = None
+    ) -> None:
+        if date_key is None:
+            date_key = self._active_day_header
+        if date_key is None:
+            return
+
+        assignments = self._calendar_assignments.get(date_key)
+        if not assignments:
+            self._set_status(FAIL_COLOR, "No orders scheduled for this day.")
+            return
+
+        removed_count = len(assignments)
+        self._calendar_assignments.pop(date_key, None)
+        self._update_day_cell_display(date_key)
+        self._schedule_state_save()
+
+        date_label_text = self._format_date_label(date_key)
+        plural = "s" if removed_count != 1 else ""
+        message = f"Cleared {removed_count} order{plural} from {date_label_text}."
+        self._set_status(SUCCESS_COLOR, message)
 
     def _apply_day_cell_base_style(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
