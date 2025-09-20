@@ -1629,31 +1629,56 @@ class YBSApp:
             return "break"
 
         children = tuple(self.tree.get_children(""))
+        children_set = set(children)
         try:
             anchor = self.tree.selection_anchor()
         except tk.TclError:
             anchor = None
-        if anchor not in children:
+        if anchor not in children_set:
             anchor = None
 
         previous_selection = tuple(self.tree.selection())
-        new_selection, new_anchor = self._compute_multi_selection(
-            children,
-            previous_selection,
-            item_id,
-            anchor,
-            ctrl_pressed,
-            shift_pressed,
+        previous_selected = {
+            item for item in previous_selection if item in children_set
+        }
+        ordered_previous = tuple(
+            child for child in children if child in previous_selected
         )
 
-        if new_selection:
-            self.tree.selection_set(new_selection)
+        no_modifier = not ctrl_pressed and not shift_pressed
+        keep_existing = no_modifier and item_id in previous_selected
+
+        selection_changed = True
+        new_anchor: str | None = None
+
+        if keep_existing:
+            new_selection = ordered_previous
+            selection_changed = False
         else:
-            self.tree.selection_remove(self.tree.selection())
+            computed_selection, candidate_anchor = self._compute_multi_selection(
+                children,
+                ordered_previous,
+                item_id,
+                anchor,
+                ctrl_pressed,
+                shift_pressed,
+            )
+            filtered_selection = tuple(
+                item for item in computed_selection if item in children_set
+            )
+            new_selection = filtered_selection
+            new_anchor = candidate_anchor
+            selection_changed = new_selection != ordered_previous
+
+        if selection_changed:
+            if new_selection:
+                self.tree.selection_set(new_selection)
+            else:
+                self.tree.selection_remove(self.tree.selection())
 
         self.tree.focus(item_id)
 
-        if new_anchor is not None:
+        if selection_changed and new_anchor is not None:
             try:
                 self.tree.selection_anchor(new_anchor)
             except tk.TclError:
@@ -1831,6 +1856,8 @@ class YBSApp:
 
         total_indices = tuple(range(len(assignments)))
         existing_selection = tuple(int(i) for i in orders_list.curselection())
+        existing_set = {idx for idx in existing_selection if idx in total_indices}
+
         try:
             anchor_index = int(orders_list.index(tk.ANCHOR))
         except (tk.TclError, ValueError):
@@ -1838,20 +1865,37 @@ class YBSApp:
         if anchor_index not in total_indices:
             anchor_index = None
 
-        new_selection, new_anchor = self._compute_multi_selection(
-            total_indices,
-            existing_selection,
-            index,
-            anchor_index,
-            ctrl_pressed,
-            shift_pressed,
-        )
+        no_modifier = not ctrl_pressed and not shift_pressed
+        keep_existing = no_modifier and index in existing_set
 
-        orders_list.selection_clear(0, tk.END)
-        for idx in new_selection:
-            orders_list.selection_set(idx)
+        selection_changed = True
+        new_anchor: int | None = None
 
-        if new_anchor is not None:
+        if keep_existing:
+            new_selection = existing_selection
+            selection_changed = False
+        else:
+            computed_selection, candidate_anchor = self._compute_multi_selection(
+                total_indices,
+                existing_selection,
+                index,
+                anchor_index,
+                ctrl_pressed,
+                shift_pressed,
+            )
+            filtered_selection = tuple(
+                idx for idx in computed_selection if idx in total_indices
+            )
+            new_selection = filtered_selection
+            new_anchor = candidate_anchor
+            selection_changed = new_selection != existing_selection
+
+        if selection_changed:
+            orders_list.selection_clear(0, tk.END)
+            for idx in new_selection:
+                orders_list.selection_set(idx)
+
+        if selection_changed and new_anchor is not None:
             orders_list.selection_anchor(new_anchor)
 
         orders_list.activate(index)
