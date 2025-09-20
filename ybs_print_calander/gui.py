@@ -22,6 +22,12 @@ PENDING_COLOR = "#f0ad4e"
 DAY_CELL_BACKGROUND = "#102a54"
 DAY_CELL_HOVER_VALID = "#25497a"
 DAY_CELL_HOVER_INVALID = "#5a1f1f"
+TODAY_BORDER_COLOR = "#f6c343"
+TODAY_HEADER_BACKGROUND = "#1d4e89"
+ASSIGNMENT_HEADER_BACKGROUND = "#2561a8"
+ASSIGNMENT_LIST_BACKGROUND = "#17406d"
+NOTES_TEXT_BACKGROUND = "#0f3460"
+ORDERS_LIST_BACKGROUND = "#0d274a"
 
 DRAG_THRESHOLD = 5
 
@@ -37,6 +43,9 @@ class DayCell:
     notes_text: tk.Text
     orders_list: tk.Listbox
     default_bg: str
+    border_color: str = ACCENT_COLOR
+    border_thickness: int = 1
+    is_today: bool = False
 
 
 class YBSApp:
@@ -225,7 +234,7 @@ class YBSApp:
 
         header_frame = ttk.Frame(calendar_frame, style="Dark.TFrame")
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        header_frame.columnconfigure(1, weight=1)
+        header_frame.columnconfigure(2, weight=1)
 
         previous_button = ttk.Button(
             header_frame,
@@ -235,12 +244,20 @@ class YBSApp:
         )
         previous_button.grid(row=0, column=0, padx=(0, 10))
 
+        today_button = ttk.Button(
+            header_frame,
+            text="Today",
+            style="Dark.TButton",
+            command=self._go_to_today,
+        )
+        today_button.grid(row=0, column=1, padx=(0, 10))
+
         self.month_label = ttk.Label(
             header_frame,
             textvariable=self.month_label_var,
             style="Dark.TLabel",
         )
-        self.month_label.grid(row=0, column=1, sticky="ew")
+        self.month_label.grid(row=0, column=2, sticky="ew")
 
         next_button = ttk.Button(
             header_frame,
@@ -248,7 +265,7 @@ class YBSApp:
             style="Dark.TButton",
             command=lambda: self._change_month(1),
         )
-        next_button.grid(row=0, column=2, padx=(10, 0))
+        next_button.grid(row=0, column=3, padx=(10, 0))
 
         self.calendar_grid = ttk.Frame(calendar_frame, style="Dark.TFrame")
         self.calendar_grid.grid(row=1, column=0, sticky="nsew")
@@ -267,6 +284,8 @@ class YBSApp:
     def _render_calendar(self) -> None:
         year = self._current_year
         month = self._current_month
+        today = dt.date.today()
+        today_key = (today.year, today.month, today.day)
         first_of_month = dt.date(year, month, 1)
         self.month_label_var.set(first_of_month.strftime("%B %Y"))
 
@@ -308,12 +327,15 @@ class YBSApp:
                     continue
 
                 date_key = (year, month, day)
+                is_today = date_key == today_key
+                border_color = TODAY_BORDER_COLOR if is_today else ACCENT_COLOR
+                border_thickness = 2 if is_today else 1
                 cell_frame = tk.Frame(
                     self.calendar_grid,
                     bg=DAY_CELL_BACKGROUND,
-                    highlightbackground=ACCENT_COLOR,
-                    highlightcolor=ACCENT_COLOR,
-                    highlightthickness=1,
+                    highlightbackground=border_color,
+                    highlightcolor=border_color,
+                    highlightthickness=border_thickness,
                     bd=0,
                 )
                 cell_frame.grid(row=row_index, column=column_index, sticky="nsew", padx=2, pady=2)
@@ -339,7 +361,7 @@ class YBSApp:
                     cell_frame,
                     height=3,
                     wrap=tk.WORD,
-                    bg="#0f3460",
+                    bg=NOTES_TEXT_BACKGROUND,
                     fg=TEXT_COLOR,
                     insertbackground=TEXT_COLOR,
                     relief="flat",
@@ -354,7 +376,7 @@ class YBSApp:
                     exportselection=False,
                 )
                 orders_list.configure(
-                    bg="#0d274a",
+                    bg=ORDERS_LIST_BACKGROUND,
                     fg=TEXT_COLOR,
                     highlightbackground=ACCENT_COLOR,
                     highlightcolor=ACCENT_COLOR,
@@ -372,6 +394,9 @@ class YBSApp:
                     orders_list=orders_list,
                     default_bg=DAY_CELL_BACKGROUND,
                 )
+                day_cell.border_color = border_color
+                day_cell.border_thickness = border_thickness
+                day_cell.is_today = is_today
                 self._day_cells[date_key] = day_cell
 
                 existing_notes = self._calendar_notes.get(date_key, "")
@@ -399,6 +424,37 @@ class YBSApp:
                 self._update_day_cell_display(date_key)
 
         self._calendar_hover = None
+
+    def _apply_day_cell_base_style(self, date_key: DateKey) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        border_color = getattr(day_cell, "border_color", ACCENT_COLOR)
+        border_thickness = getattr(day_cell, "border_thickness", 1)
+        day_cell.frame.configure(
+            bg=day_cell.default_bg,
+            highlightbackground=border_color,
+            highlightcolor=border_color,
+            highlightthickness=border_thickness,
+        )
+
+        assignments = self._calendar_assignments.get(date_key, [])
+        has_assignments = bool(assignments)
+
+        if has_assignments:
+            header_bg = ASSIGNMENT_HEADER_BACKGROUND
+            orders_bg = ASSIGNMENT_LIST_BACKGROUND
+        else:
+            header_bg = (
+                TODAY_HEADER_BACKGROUND
+                if getattr(day_cell, "is_today", False)
+                else day_cell.default_bg
+            )
+            orders_bg = ORDERS_LIST_BACKGROUND
+
+        day_cell.header_label.configure(bg=header_bg, fg=TEXT_COLOR)
+        day_cell.orders_list.configure(bg=orders_bg, fg=TEXT_COLOR)
 
     def _save_day_notes(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
@@ -578,6 +634,13 @@ class YBSApp:
 
         self._current_year = year
         self._current_month = month
+        self._remove_calendar_hover()
+        self._render_calendar()
+
+    def _go_to_today(self) -> None:
+        today = dt.date.today()
+        self._current_year = today.year
+        self._current_month = today.month
         self._remove_calendar_hover()
         self._render_calendar()
 
@@ -813,6 +876,7 @@ class YBSApp:
             bg=hover_color,
             highlightbackground=border_color,
             highlightcolor=border_color,
+            highlightthickness=day_cell.border_thickness + 1,
         )
         day_cell.header_label.configure(bg=hover_color)
 
@@ -823,14 +887,7 @@ class YBSApp:
             return
 
         date_key = self._calendar_hover
-        day_cell = self._day_cells.get(date_key)
-        if day_cell:
-            day_cell.frame.configure(
-                bg=day_cell.default_bg,
-                highlightbackground=ACCENT_COLOR,
-                highlightcolor=ACCENT_COLOR,
-            )
-            day_cell.header_label.configure(bg=day_cell.default_bg)
+        self._apply_day_cell_base_style(date_key)
 
         self._calendar_hover = None
 
@@ -903,6 +960,7 @@ class YBSApp:
                 day_text = str(day_value)
 
         day_cell.header_label.configure(text=day_text)
+        self._apply_day_cell_base_style(date_key)
 
     def _format_assignment_label(self, assignment: Tuple[str, str]) -> str:
         order_number = assignment[0].strip()
