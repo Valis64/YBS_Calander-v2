@@ -2787,11 +2787,10 @@ class YBSApp:
             return
 
         source_kind = payload.get("source_kind")
-        if (
+        clear_tree_after_drop = (
             source_kind == "tree"
             or (source_kind is None and "source_date_key" not in payload)
-        ):
-            self._clear_tree_selection()
+        )
 
         raw_source_key = payload.get("source_date_key")
         normalized_source: DateKey | None = None
@@ -2960,6 +2959,9 @@ class YBSApp:
         self._update_day_cell_display(normalized_key)
         if normalized_source is not None and normalized_source != normalized_key:
             self._update_day_cell_display(normalized_source)
+
+        if clear_tree_after_drop and (added_to_target or removed_from_source):
+            self._clear_tree_selection()
 
         def apply_selection(listbox: tk.Listbox | None, indices: list[int]) -> None:
             if listbox is None:
