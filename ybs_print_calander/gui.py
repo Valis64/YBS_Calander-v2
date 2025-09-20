@@ -2555,7 +2555,7 @@ class YBSApp:
 
         if not drag_was_active:
             self._end_drag()
-            return None
+            return "break"
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
