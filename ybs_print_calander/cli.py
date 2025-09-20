@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import sys
 from getpass import getpass
+from io import StringIO
 from typing import Iterable, Sequence
 
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
@@ -50,6 +53,23 @@ def _format_table(orders: Sequence[OrderRecord]) -> str:
     return "\n".join(lines)
 
 
+def _format_orders_csv(orders: Sequence[OrderRecord]) -> str:
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["order_number", "company"])
+    for order in orders:
+        writer.writerow([order.order_number, order.company])
+    return buffer.getvalue()
+
+
+def _format_orders_json(orders: Sequence[OrderRecord]) -> str:
+    payload = [
+        {"order_number": order.order_number, "company": order.company}
+        for order in orders
+    ]
+    return json.dumps(payload, indent=2)
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="YBS Print Calander CLI")
     parser.add_argument(
@@ -72,6 +92,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--no-prompt",
         action="store_true",
         help="Fail immediately if credentials are not supplied via arguments",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("table", "csv", "json"),
+        default="table",
+        help="Format used to display orders (default: table)",
+    )
+    parser.add_argument(
+        "--output",
+        metavar="FILE",
+        help="Write the formatted orders to FILE instead of standard output",
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -114,7 +145,24 @@ def main(argv: Iterable[str] | None = None) -> int:
         print("No orders were returned from the manage page.")
         return 0
 
-    print(_format_table(orders))
+    formatters = {
+        "table": _format_table,
+        "csv": _format_orders_csv,
+        "json": _format_orders_json,
+    }
+    payload = formatters[args.format](orders)
+
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                if payload and not payload.endswith("\n"):
+                    handle.write("\n")
+        except OSError as exc:
+            print(f"Failed to write output to {args.output!r}: {exc}", file=sys.stderr)
+            return 3
+    else:
+        print(payload)
     return 0
 
 
