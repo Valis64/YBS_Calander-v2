@@ -567,6 +567,10 @@ class YBSApp:
                     "<Double-Button-1>",
                     lambda event, key=date_key: self._open_day_details(key),
                 )
+                orders_list.bind(
+                    "<Delete>",
+                    lambda event, key=date_key: self._on_day_order_delete(event, key),
+                )
 
                 self._update_day_cell_display(date_key)
 
@@ -620,6 +624,46 @@ class YBSApp:
 
         if changed:
             self._schedule_state_save()
+
+    def _on_day_order_delete(
+        self, event: tk.Event | None, date_key: DateKey
+    ) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        orders_list = day_cell.orders_list
+        selection = orders_list.curselection()
+        assignments = self._calendar_assignments.get(date_key, [])
+
+        if not assignments:
+            orders_list.selection_clear(0, tk.END)
+            self._set_status(FAIL_COLOR, "No orders scheduled for this day.")
+            return
+
+        if not selection:
+            self._set_status(FAIL_COLOR, "Please select an order to remove.")
+            return
+
+        index = selection[0]
+        if index < 0 or index >= len(assignments):
+            self._set_status(
+                FAIL_COLOR, "Unable to determine which order to remove."
+            )
+            return
+
+        removed_assignment = assignments.pop(index)
+        if assignments:
+            self._calendar_assignments[date_key] = assignments
+        else:
+            self._calendar_assignments.pop(date_key, None)
+
+        orders_list.selection_clear(0, tk.END)
+        self._update_day_cell_display(date_key)
+        self._schedule_state_save()
+
+        message = self._format_removal_message(date_key, removed_assignment)
+        self._set_status(SUCCESS_COLOR, message)
 
     def _open_day_details(self, date_key: DateKey) -> None:
         window = tk.Toplevel(self.root)
