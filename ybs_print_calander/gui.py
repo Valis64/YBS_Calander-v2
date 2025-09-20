@@ -1758,15 +1758,15 @@ class YBSApp:
                 orders_list.selection_set(index)
                 orders_list.selection_anchor(index)
         else:
-            orders_list.selection_clear(0, tk.END)
-            orders_list.selection_set(index)
+            if not orders_list.selection_includes(index):
+                orders_list.selection_clear(0, tk.END)
+                orders_list.selection_set(index)
             orders_list.selection_anchor(index)
 
         orders_list.activate(index)
 
-        selected_indices: tuple[int, ...] = tuple(
-            int(i) for i in orders_list.curselection()
-        )
+        current_selection = orders_list.curselection()
+        selected_indices: tuple[int, ...] = tuple(int(i) for i in current_selection)
 
         normalized_assignments: list[Tuple[str, str]] = []
         for idx in selected_indices:
