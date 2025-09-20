@@ -2810,6 +2810,11 @@ class YBSApp:
             if normalized_source is not None
             else None
         )
+        deselect_after_cross_day_move = (
+            source_kind == "calendar"
+            and normalized_source is not None
+            and normalized_source != normalized_key
+        )
 
         def current_selection(listbox: tk.Listbox | None) -> list[int]:
             if listbox is None:
@@ -2945,6 +2950,8 @@ class YBSApp:
         for idx in target_indices:
             if idx not in combined_target_selection:
                 combined_target_selection.append(idx)
+        if deselect_after_cross_day_move:
+            combined_target_selection = []
 
         source_selection_after: list[int] = []
         if (
@@ -2955,6 +2962,10 @@ class YBSApp:
             source_selection_after = adjust_selection(
                 source_selection_before, removed_sorted
             )
+        if deselect_after_cross_day_move:
+            source_selection_after = []
+            self._day_selection_anchor.pop(normalized_key, None)
+            self._day_selection_anchor.pop(normalized_source, None)
 
         self._update_day_cell_display(normalized_key)
         if normalized_source is not None and normalized_source != normalized_key:
