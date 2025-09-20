@@ -571,6 +571,18 @@ class YBSApp:
                     "<Delete>",
                     lambda event, key=date_key: self._on_day_order_delete(event, key),
                 )
+                orders_list.bind(
+                    "<ButtonPress-1>",
+                    lambda event, key=date_key: self._on_day_order_press(event, key),
+                )
+                orders_list.bind(
+                    "<B1-Motion>",
+                    lambda event, key=date_key: self._on_day_order_drag(event, key),
+                )
+                orders_list.bind(
+                    "<ButtonRelease-1>",
+                    lambda event, key=date_key: self._on_day_order_release(event, key),
+                )
 
                 self._update_day_cell_display(date_key)
 
@@ -852,6 +864,10 @@ class YBSApp:
             "start_y": 0,
             "widget": None,
             "active": False,
+            "source": None,
+            "source_date_key": None,
+            "source_index": None,
+            "source_assignment": None,
         }
 
     def _on_order_press(self, event: tk.Event) -> None:
@@ -866,14 +882,20 @@ class YBSApp:
         if not isinstance(values, tuple):
             values = tuple(values)
 
+        order_values = tuple(str(value) for value in values)
+
         self._drag_data.update(
             {
                 "item": item_id,
-                "values": values,
+                "values": order_values,
                 "start_x": event.x_root,
                 "start_y": event.y_root,
                 "widget": None,
                 "active": False,
+                "source": "tree",
+                "source_date_key": None,
+                "source_index": None,
+                "source_assignment": order_values,
             }
         )
 
@@ -952,6 +974,231 @@ class YBSApp:
                         {"date_key": normalized_key, "values": order_values},
                     )
                 )
+        else:
+            self._queue.put(
+                (
+                    "calendar_drop",
+                    False,
+                    "Please drop orders onto a valid calendar day.",
+                    None,
+                )
+            )
+
+        self._end_drag()
+
+    def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> None:
+        self._end_drag()
+
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        orders_list = day_cell.orders_list
+        assignments = self._calendar_assignments.get(date_key, [])
+        if not assignments:
+            orders_list.selection_clear(0, tk.END)
+            return
+
+        try:
+            index = int(orders_list.nearest(event.y))
+        except (tk.TclError, ValueError):
+            return
+
+        if index < 0 or index >= len(assignments):
+            orders_list.selection_clear(0, tk.END)
+            return
+
+        try:
+            bbox = orders_list.bbox(index)
+        except tk.TclError:
+            bbox = None
+
+        if not bbox or not (bbox[1] <= event.y <= bbox[1] + bbox[3]):
+            orders_list.selection_clear(0, tk.END)
+            return
+
+        orders_list.selection_clear(0, tk.END)
+        orders_list.selection_set(index)
+        orders_list.activate(index)
+
+        assignment = assignments[index]
+        normalized_assignment = tuple(str(value) for value in assignment)
+        if len(normalized_assignment) < 2:
+            normalized_assignment = normalized_assignment + ("",) * (2 - len(normalized_assignment))
+        assignment_values = normalized_assignment[:2]
+
+        try:
+            normalized_date_key = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            normalized_date_key = date_key
+
+        self._drag_data.update(
+            {
+                "item": ("calendar", normalized_date_key, index),
+                "values": assignment_values,
+                "start_x": event.x_root,
+                "start_y": event.y_root,
+                "widget": None,
+                "active": False,
+                "source": "calendar",
+                "source_date_key": normalized_date_key,
+                "source_index": index,
+                "source_assignment": assignment_values,
+            }
+        )
+
+    def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> None:
+        if self._drag_data.get("source") != "calendar":
+            return
+
+        try:
+            normalized_date_key = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            normalized_date_key = date_key
+
+        if self._drag_data.get("source_date_key") != normalized_date_key:
+            return
+
+        item_id = self._drag_data.get("item")
+        if not item_id:
+            return
+
+        if not self._drag_data.get("active"):
+            start_x = int(self._drag_data.get("start_x", event.x_root))
+            start_y = int(self._drag_data.get("start_y", event.y_root))
+            if (
+                abs(event.x_root - start_x) >= DRAG_THRESHOLD
+                or abs(event.y_root - start_y) >= DRAG_THRESHOLD
+            ):
+                self._begin_drag()
+
+        if not self._drag_data.get("active"):
+            return
+
+        self._position_drag_window(event.x_root, event.y_root)
+        target_info = self._detect_calendar_target(event.x_root, event.y_root)
+        self._update_calendar_hover(target_info)
+
+    def _on_day_order_release(self, event: tk.Event, date_key: DateKey) -> None:
+        if self._drag_data.get("source") != "calendar":
+            self._end_drag()
+            return
+
+        try:
+            normalized_date_key = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            normalized_date_key = date_key
+
+        if self._drag_data.get("source_date_key") != normalized_date_key:
+            self._end_drag()
+            return
+
+        item_id = self._drag_data.get("item")
+        if not item_id:
+            self._end_drag()
+            return
+
+        if not self._drag_data.get("active"):
+            self._end_drag()
+            return
+
+        target_info = self._detect_calendar_target(event.x_root, event.y_root)
+        normalized_key: DateKey | None = None
+        if target_info:
+            raw_key = target_info.get("date_key")
+            if isinstance(raw_key, (tuple, list)) and len(raw_key) == 3:
+                try:
+                    normalized_key = (
+                        int(raw_key[0]),
+                        int(raw_key[1]),
+                        int(raw_key[2]),
+                    )
+                except (TypeError, ValueError):
+                    normalized_key = None
+
+        if normalized_key is not None:
+            values = self._drag_data.get("values", ())
+            if not isinstance(values, (tuple, list)) or not values:
+                self._queue.put(
+                    (
+                        "calendar_drop",
+                        False,
+                        "Unable to determine which order was dragged.",
+                        None,
+                    )
+                )
+            else:
+                order_values = tuple(str(value) for value in values)
+                order_number = order_values[0] if len(order_values) > 0 else ""
+                company = order_values[1] if len(order_values) > 1 else ""
+
+                raw_source_key = self._drag_data.get("source_date_key")
+                normalized_source: DateKey | None = None
+                if isinstance(raw_source_key, (tuple, list)) and len(raw_source_key) == 3:
+                    try:
+                        normalized_source = (
+                            int(raw_source_key[0]),
+                            int(raw_source_key[1]),
+                            int(raw_source_key[2]),
+                        )
+                    except (TypeError, ValueError):
+                        normalized_source = None
+
+                target_label = self._format_date_label(normalized_key)
+                source_label = (
+                    self._format_date_label(normalized_source)
+                    if normalized_source is not None
+                    else ""
+                )
+
+                order_label = "order"
+                if order_number:
+                    order_label += f" {order_number}"
+                if company:
+                    order_label += f" ({company})"
+
+                if normalized_source is not None and normalized_source != normalized_key:
+                    message = f"Moved {order_label} from {source_label} to {target_label}."
+                elif normalized_source is not None and normalized_source == normalized_key:
+                    capitalized = order_label[0].upper() + order_label[1:]
+                    message = f"{capitalized} remains scheduled for {target_label}."
+                else:
+                    message = f"Assigned {order_label} to {target_label}."
+
+                payload: dict[str, object] = {
+                    "date_key": normalized_key,
+                    "values": order_values,
+                }
+
+                if normalized_source is not None:
+                    payload["source_date_key"] = normalized_source
+                    source_index = self._drag_data.get("source_index")
+                    try:
+                        payload["source_index"] = int(source_index)
+                    except (TypeError, ValueError):
+                        pass
+
+                    source_assignment = self._drag_data.get("source_assignment")
+                    if isinstance(source_assignment, (tuple, list)):
+                        payload["source_assignment"] = tuple(
+                            str(value) for value in source_assignment
+                        )
+                    else:
+                        payload["source_assignment"] = order_values
+
+                self._queue.put(("calendar_drop", True, message, payload))
         else:
             self._queue.put(
                 (
@@ -1113,7 +1360,7 @@ class YBSApp:
         date_key = payload.get("date_key")
         values = payload.get("values")
         if (
-            not isinstance(date_key, tuple)
+            not isinstance(date_key, (tuple, list))
             or len(date_key) != 3
             or not isinstance(values, (tuple, list))
         ):
@@ -1125,10 +1372,69 @@ class YBSApp:
             return
 
         order_values = tuple(str(value) for value in values)
-        self._assign_order_to_day(normalized_key, order_values)
-        self._schedule_state_save()
+        raw_source_key = payload.get("source_date_key")
+        normalized_source: DateKey | None = None
+        if isinstance(raw_source_key, (tuple, list)) and len(raw_source_key) == 3:
+            try:
+                normalized_source = (
+                    int(raw_source_key[0]),
+                    int(raw_source_key[1]),
+                    int(raw_source_key[2]),
+                )
+            except (TypeError, ValueError):
+                normalized_source = None
 
-    def _assign_order_to_day(self, date_key: DateKey, order_values: Tuple[str, ...]) -> None:
+        source_assignment_raw = payload.get("source_assignment")
+        source_assignment: Tuple[str, ...] | None = None
+        if isinstance(source_assignment_raw, (tuple, list)):
+            source_assignment = tuple(str(value) for value in source_assignment_raw)
+
+        source_index_raw = payload.get("source_index")
+        if isinstance(source_index_raw, int):
+            source_index = source_index_raw
+        else:
+            try:
+                source_index = int(source_index_raw)
+            except (TypeError, ValueError):
+                source_index = None
+
+        removed_from_source = False
+        if normalized_source is not None:
+            assignments = self._calendar_assignments.get(normalized_source, [])
+            expected_assignment = source_assignment or order_values
+
+            removal_index: int | None = None
+            if (
+                isinstance(source_index, int)
+                and 0 <= source_index < len(assignments)
+            ):
+                candidate = assignments[source_index]
+                candidate_tuple = tuple(str(value) for value in candidate)
+                if candidate_tuple == expected_assignment:
+                    removal_index = source_index
+
+            if removal_index is None:
+                for idx, assignment in enumerate(assignments):
+                    if tuple(str(value) for value in assignment) == expected_assignment:
+                        removal_index = idx
+                        break
+
+            if removal_index is not None:
+                assignments.pop(removal_index)
+                if assignments:
+                    self._calendar_assignments[normalized_source] = assignments
+                else:
+                    self._calendar_assignments.pop(normalized_source, None)
+                self._update_day_cell_display(normalized_source)
+                removed_from_source = True
+
+        added_to_target = self._assign_order_to_day(normalized_key, order_values)
+        if removed_from_source and not added_to_target:
+            self._schedule_state_save()
+
+    def _assign_order_to_day(
+        self, date_key: DateKey, order_values: Tuple[str, ...]
+    ) -> bool:
         order_number = order_values[0] if len(order_values) > 0 else ""
         company = order_values[1] if len(order_values) > 1 else ""
         normalized: Tuple[str, str] = (str(order_number), str(company))
@@ -1143,6 +1449,8 @@ class YBSApp:
 
         if changed:
             self._schedule_state_save()
+
+        return changed
 
     def _update_day_cell_display(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
