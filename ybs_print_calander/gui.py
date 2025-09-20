@@ -1179,7 +1179,9 @@ class YBSApp:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(2, weight=1)
 
-        content_paned.add(table_frame, weight=3)
+        # Allocate one quarter of the horizontal space to the orders table
+        # and reserve the remaining space for the calendar view.
+        content_paned.add(table_frame, weight=1)
 
         calendar_frame = ttk.LabelFrame(
             content_paned,
@@ -1236,7 +1238,7 @@ class YBSApp:
 
         self._render_calendar()
 
-        content_paned.add(calendar_frame, weight=2)
+        content_paned.add(calendar_frame, weight=3)
 
     def _focus_main_tab(self) -> None:
         notebook = getattr(self, "notebook", None)
