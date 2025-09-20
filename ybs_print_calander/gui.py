@@ -1769,9 +1769,8 @@ class YBSApp:
                 orders_list.selection_set(index)
                 orders_list.selection_anchor(index)
         else:
-            if not orders_list.selection_includes(index):
-                orders_list.selection_clear(0, tk.END)
-                orders_list.selection_set(index)
+            orders_list.selection_clear(0, tk.END)
+            orders_list.selection_set(index)
             orders_list.selection_anchor(index)
 
         orders_list.activate(index)
