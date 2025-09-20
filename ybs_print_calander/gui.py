@@ -693,6 +693,18 @@ class YBSApp:
             foreground=TEXT_COLOR,
         )
         style.configure("Dark.TPanedwindow", background=BACKGROUND_COLOR)
+        style.configure("Dark.TNotebook", background=BACKGROUND_COLOR, borderwidth=0)
+        style.configure(
+            "Dark.TNotebook.Tab",
+            background=ACCENT_COLOR,
+            foreground=TEXT_COLOR,
+            padding=(12, 6),
+        )
+        style.map(
+            "Dark.TNotebook.Tab",
+            background=[("selected", ACTIVE_DAY_HEADER_BACKGROUND)],
+            foreground=[("selected", TEXT_COLOR)],
+        )
         style.configure(
             "Dark.TButton",
             background=ACCENT_COLOR,
@@ -725,26 +737,66 @@ class YBSApp:
         style.map("Dark.Treeview.Heading", background=[("active", "#25497a")])
 
     def _build_layout(self) -> None:
+        menu_bar = tk.Menu(self.root)
+        self.root.config(menu=menu_bar)
+
+        file_menu = tk.Menu(menu_bar, tearoff=False)
+        file_menu.add_command(label="Exit", command=self._on_close)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
+        edit_menu = tk.Menu(menu_bar, tearoff=False)
+        edit_menu.add_command(label="Undo", command=lambda: self._undo_last_action(None))
+        edit_menu.add_command(label="Redo", command=lambda: self._redo_last_action(None))
+        menu_bar.add_cascade(label="Edit", menu=edit_menu)
+
+        settings_menu = tk.Menu(menu_bar, tearoff=False)
+        settings_menu.add_command(label="Show Settings", command=self._focus_settings_tab)
+        settings_menu.add_command(
+            label="Show Orders & Calendar",
+            command=self._focus_main_tab,
+        )
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+
+        help_menu = tk.Menu(menu_bar, tearoff=False)
+        help_menu.add_command(label="About", command=self._show_about_message)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+
         container = ttk.Frame(self.root, style="Dark.TFrame")
         container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-        login_frame = ttk.Frame(container, style="Dark.TFrame")
-        login_frame.pack(fill=tk.X, pady=(0, 20))
+        self.notebook = ttk.Notebook(container, style="Dark.TNotebook")
+        self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        username_label = ttk.Label(login_frame, text="Username", style="Dark.TLabel")
+        self.main_tab = ttk.Frame(self.notebook, style="Dark.TFrame")
+        self.settings_tab = ttk.Frame(self.notebook, style="Dark.TFrame", padding=20)
+
+        self.notebook.add(self.main_tab, text="Orders & Calendar")
+        self.notebook.add(self.settings_tab, text="Settings")
+
+        main_tab = self.main_tab
+        settings_tab = self.settings_tab
+        settings_tab.columnconfigure(1, weight=1)
+
+        username_label = ttk.Label(settings_tab, text="Username", style="Dark.TLabel")
         username_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-        username_entry = ttk.Entry(login_frame, textvariable=self.username_var, width=30)
-        username_entry.grid(row=0, column=1, sticky=tk.W)
-        username_entry.focus_set()
 
-        password_label = ttk.Label(login_frame, text="Password", style="Dark.TLabel")
+        self.username_entry = ttk.Entry(settings_tab, textvariable=self.username_var, width=30)
+        self.username_entry.grid(row=0, column=1, sticky=tk.W)
+        self.username_entry.bind("<Return>", self._on_enter_pressed)
+
+        password_label = ttk.Label(settings_tab, text="Password", style="Dark.TLabel")
         password_label.grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(10, 0))
-        password_entry = ttk.Entry(login_frame, textvariable=self.password_var, show="*", width=30)
-        password_entry.grid(row=1, column=1, sticky=tk.W, pady=(10, 0))
-        username_entry.bind("<Return>", self._on_enter_pressed)
-        password_entry.bind("<Return>", self._on_enter_pressed)
 
-        button_frame = ttk.Frame(login_frame, style="Dark.TFrame")
+        self.password_entry = ttk.Entry(
+            settings_tab,
+            textvariable=self.password_var,
+            show="*",
+            width=30,
+        )
+        self.password_entry.grid(row=1, column=1, sticky=tk.W, pady=(10, 0))
+        self.password_entry.bind("<Return>", self._on_enter_pressed)
+
+        button_frame = ttk.Frame(settings_tab, style="Dark.TFrame")
         button_frame.grid(row=0, column=2, rowspan=2, padx=(20, 0), sticky=tk.N)
 
         self.status_canvas = tk.Canvas(
@@ -775,11 +827,11 @@ class YBSApp:
         )
         self.refresh_button.pack(pady=(8, 0))
 
-        self.status_message = ttk.Label(login_frame, text="", style="Dark.TLabel")
+        self.status_message = ttk.Label(settings_tab, text="", style="Dark.TLabel")
         self.status_message.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
 
         self.last_refresh_label = ttk.Label(
-            login_frame,
+            settings_tab,
             textvariable=self.last_refresh_var,
             style="Dark.TLabel",
             font=("TkDefaultFont", 8),
@@ -788,7 +840,7 @@ class YBSApp:
             row=3, column=0, columnspan=3, sticky=tk.W, pady=(2, 0)
         )
 
-        content_paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL, style="Dark.TPanedwindow")
+        content_paned = ttk.Panedwindow(main_tab, orient=tk.HORIZONTAL, style="Dark.TPanedwindow")
         content_paned.pack(fill=tk.BOTH, expand=True)
 
         table_frame = ttk.LabelFrame(
@@ -893,6 +945,48 @@ class YBSApp:
         self._render_calendar()
 
         content_paned.add(calendar_frame, weight=2)
+
+    def _focus_main_tab(self) -> None:
+        notebook = getattr(self, "notebook", None)
+        main_tab = getattr(self, "main_tab", None)
+        if notebook is None or main_tab is None:
+            return
+
+        try:
+            notebook.select(main_tab)
+        except tk.TclError:
+            return
+
+        tree_widget = getattr(self, "tree", None)
+        if isinstance(tree_widget, ttk.Treeview):
+            try:
+                tree_widget.focus_set()
+            except tk.TclError:
+                pass
+
+    def _focus_settings_tab(self) -> None:
+        notebook = getattr(self, "notebook", None)
+        settings_tab = getattr(self, "settings_tab", None)
+        if notebook is None or settings_tab is None:
+            return
+
+        try:
+            notebook.select(settings_tab)
+        except tk.TclError:
+            return
+
+        username_entry = getattr(self, "username_entry", None)
+        if isinstance(username_entry, ttk.Entry):
+            try:
+                username_entry.focus_set()
+            except tk.TclError:
+                pass
+
+    def _show_about_message(self) -> None:
+        self._set_status(
+            SUCCESS_COLOR,
+            "YBS Print Calander v2 - Manage print orders and assignments.",
+        )
 
     def _render_calendar(self) -> None:
         year = self._current_year
