@@ -124,6 +124,31 @@ class YBSApp:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _normalize_assignment(values: Iterable[object]) -> Tuple[str, str]:
+        sequence = tuple(str(value) for value in values)
+        first = sequence[0] if len(sequence) > 0 else ""
+        second = sequence[1] if len(sequence) > 1 else ""
+        return (first, second)
+
+    @staticmethod
+    def _event_state_has_flag(event: tk.Event | None, mask: int) -> bool:
+        try:
+            state = int(getattr(event, "state", 0))
+        except (TypeError, ValueError):
+            return False
+        return bool(state & mask)
+
+    @classmethod
+    def _is_shift_pressed(cls, event: tk.Event | None) -> bool:
+        return cls._event_state_has_flag(event, 0x0001)
+
+    @classmethod
+    def _is_control_pressed(cls, event: tk.Event | None) -> bool:
+        state = int(getattr(event, "state", 0) or 0)
+        control_masks = (0x0004, 0x0008, 0x0010, 0x0040, 0x0080)
+        return any(state & mask for mask in control_masks)
+
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
         assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
@@ -782,6 +807,7 @@ class YBSApp:
                     height=3,
                     activestyle="none",
                     exportselection=False,
+                    selectmode=tk.EXTENDED,
                 )
                 orders_list.configure(
                     bg=ORDERS_LIST_BACKGROUND,
@@ -1084,7 +1110,7 @@ class YBSApp:
         listbox = tk.Listbox(
             frame,
             height=8,
-            selectmode=tk.SINGLE,
+            selectmode=tk.EXTENDED,
             activestyle="none",
             exportselection=False,
         )
@@ -1249,7 +1275,7 @@ class YBSApp:
 
     def _reset_drag_state(self) -> None:
         self._drag_data = {
-            "item": None,
+            "items": (),
             "values": (),
             "start_x": 0,
             "start_y": 0,
@@ -1257,42 +1283,95 @@ class YBSApp:
             "active": False,
             "source": None,
             "source_date_key": None,
-            "source_index": None,
-            "source_assignment": None,
+            "source_indices": (),
+            "source_assignments": (),
         }
 
-    def _on_order_press(self, event: tk.Event) -> None:
+    def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
         item_id = self.tree.identify_row(event.y)
+        ctrl_pressed = self._is_control_pressed(event)
+        shift_pressed = self._is_shift_pressed(event)
+
         if not item_id:
-            self.tree.selection_remove(self.tree.selection())
-            return
+            if not ctrl_pressed and not shift_pressed:
+                self.tree.selection_remove(self.tree.selection())
+            self._drag_data.update(
+                {
+                    "items": (),
+                    "values": (),
+                    "start_x": event.x_root,
+                    "start_y": event.y_root,
+                    "widget": None,
+                    "active": False,
+                    "source": "tree",
+                    "source_date_key": None,
+                    "source_indices": (),
+                    "source_assignments": (),
+                }
+            )
+            return "break"
 
-        self.tree.selection_set(item_id)
-        values = self.tree.item(item_id, "values") or ()
-        if not isinstance(values, tuple):
-            values = tuple(values)
+        children = list(self.tree.get_children(""))
+        anchor = self.tree.focus()
+        if anchor not in children:
+            anchor = None
 
-        order_values = tuple(str(value) for value in values)
+        if shift_pressed and children:
+            if anchor is None:
+                anchor = item_id
+            try:
+                start_index = children.index(anchor)
+                end_index = children.index(item_id)
+            except ValueError:
+                selection = (item_id,)
+            else:
+                if start_index > end_index:
+                    start_index, end_index = end_index, start_index
+                selection = children[start_index : end_index + 1]
+            self.tree.selection_set(selection)
+        elif ctrl_pressed:
+            if item_id in self.tree.selection():
+                self.tree.selection_remove(item_id)
+            else:
+                self.tree.selection_add(item_id)
+        else:
+            self.tree.selection_set((item_id,))
+
+        self.tree.focus(item_id)
+
+        selected_set = set(self.tree.selection())
+        ordered_selection = tuple(
+            child for child in children if child in selected_set
+        )
+
+        normalized_values: list[Tuple[str, str]] = []
+        for selected_id in ordered_selection:
+            values = self.tree.item(selected_id, "values") or ()
+            normalized_values.append(self._normalize_assignment(values))
+
+        assignments_tuple = tuple(normalized_values)
 
         self._drag_data.update(
             {
-                "item": item_id,
-                "values": order_values,
+                "items": ordered_selection,
+                "values": assignments_tuple,
                 "start_x": event.x_root,
                 "start_y": event.y_root,
                 "widget": None,
                 "active": False,
                 "source": "tree",
                 "source_date_key": None,
-                "source_index": None,
-                "source_assignment": order_values,
+                "source_indices": (),
+                "source_assignments": assignments_tuple,
             }
         )
 
+        return "break"
+
     def _on_order_drag(self, event: tk.Event) -> None:
-        item_id = self._drag_data.get("item")
-        if not item_id:
+        items = self._drag_data.get("items")
+        if not items:
             return
 
         if not self._drag_data.get("active"):
@@ -1312,8 +1391,8 @@ class YBSApp:
         self._update_calendar_hover(target_info)
 
     def _on_order_release(self, event: tk.Event) -> None:
-        item_id = self._drag_data.get("item")
-        if not item_id:
+        items = self._drag_data.get("items")
+        if not items:
             return
 
         if not self._drag_data.get("active"):
@@ -1326,14 +1405,17 @@ class YBSApp:
             raw_key = target_info.get("date_key")
             if isinstance(raw_key, tuple) and len(raw_key) == 3:
                 try:
-                    normalized_key = (int(raw_key[0]), int(raw_key[1]), int(raw_key[2]))
+                    normalized_key = (
+                        int(raw_key[0]),
+                        int(raw_key[1]),
+                        int(raw_key[2]),
+                    )
                 except (TypeError, ValueError):
                     normalized_key = None
 
         if normalized_key is not None:
-            year, month, day_value = normalized_key
-            values = self._drag_data.get("values", ())
-            if not isinstance(values, (tuple, list)) or not values:
+            raw_orders = self._drag_data.get("values", ())
+            if not isinstance(raw_orders, (tuple, list)) or not raw_orders:
                 self._queue.put(
                     (
                         "calendar_drop",
@@ -1343,28 +1425,20 @@ class YBSApp:
                     )
                 )
             else:
-                order_values = tuple(str(value) for value in values)
-                order_number = order_values[0]
-                company = order_values[1] if len(order_values) > 1 else ""
-                message = f"Assigned order {order_number}"
-                if company:
-                    message += f" ({company})"
-                try:
-                    display_date = dt.date(year, month, day_value)
-                except ValueError:
-                    display_date = None
-                if display_date is not None:
-                    message += f" to {display_date.strftime('%B %d, %Y')}."
-                else:
-                    message += f" to day {day_value}."
-                self._queue.put(
-                    (
-                        "calendar_drop",
-                        True,
-                        message,
-                        {"date_key": normalized_key, "values": order_values},
-                    )
+                normalized_orders = tuple(
+                    self._normalize_assignment(order)
+                    for order in raw_orders
                 )
+                target_label = self._format_date_label(normalized_key)
+                message = self._format_assignment_move_message(
+                    normalized_orders,
+                    target_label,
+                )
+                payload: dict[str, object] = {
+                    "date_key": normalized_key,
+                    "orders": normalized_orders,
+                }
+                self._queue.put(("calendar_drop", True, message, payload))
         else:
             self._queue.put(
                 (
@@ -1377,27 +1451,45 @@ class YBSApp:
 
         self._end_drag()
 
-    def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> None:
+    def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> str | None:
         self._end_drag()
 
         day_cell = self._day_cells.get(date_key)
         if not day_cell:
-            return
+            return "break"
 
         orders_list = day_cell.orders_list
         assignments = self._calendar_assignments.get(date_key, [])
         if not assignments:
             orders_list.selection_clear(0, tk.END)
-            return
+            self._drag_data.update(
+                {
+                    "items": (),
+                    "values": (),
+                    "start_x": event.x_root,
+                    "start_y": event.y_root,
+                    "widget": None,
+                    "active": False,
+                    "source": "calendar",
+                    "source_date_key": date_key,
+                    "source_indices": (),
+                    "source_assignments": (),
+                }
+            )
+            return "break"
 
         try:
             index = int(orders_list.nearest(event.y))
         except (tk.TclError, ValueError):
-            return
+            return "break"
+
+        ctrl_pressed = self._is_control_pressed(event)
+        shift_pressed = self._is_shift_pressed(event)
 
         if index < 0 or index >= len(assignments):
-            orders_list.selection_clear(0, tk.END)
-            return
+            if not ctrl_pressed and not shift_pressed:
+                orders_list.selection_clear(0, tk.END)
+            return "break"
 
         try:
             bbox = orders_list.bbox(index)
@@ -1405,18 +1497,44 @@ class YBSApp:
             bbox = None
 
         if not bbox or not (bbox[1] <= event.y <= bbox[1] + bbox[3]):
-            orders_list.selection_clear(0, tk.END)
-            return
+            if not ctrl_pressed and not shift_pressed:
+                orders_list.selection_clear(0, tk.END)
+            return "break"
 
-        orders_list.selection_clear(0, tk.END)
-        orders_list.selection_set(index)
+        if shift_pressed:
+            try:
+                anchor = int(orders_list.index(tk.ANCHOR))
+            except (tk.TclError, ValueError):
+                anchor = index
+            start = min(anchor, index)
+            end = max(anchor, index)
+            orders_list.selection_clear(0, tk.END)
+            for idx in range(start, end + 1):
+                orders_list.selection_set(idx)
+            orders_list.selection_anchor(anchor)
+        elif ctrl_pressed:
+            if orders_list.selection_includes(index):
+                orders_list.selection_clear(index)
+            else:
+                orders_list.selection_set(index)
+                orders_list.selection_anchor(index)
+        else:
+            orders_list.selection_clear(0, tk.END)
+            orders_list.selection_set(index)
+            orders_list.selection_anchor(index)
+
         orders_list.activate(index)
 
-        assignment = assignments[index]
-        normalized_assignment = tuple(str(value) for value in assignment)
-        if len(normalized_assignment) < 2:
-            normalized_assignment = normalized_assignment + ("",) * (2 - len(normalized_assignment))
-        assignment_values = normalized_assignment[:2]
+        selected_indices: tuple[int, ...] = tuple(
+            int(i) for i in orders_list.curselection()
+        )
+
+        normalized_assignments: list[Tuple[str, str]] = []
+        for idx in selected_indices:
+            if 0 <= idx < len(assignments):
+                normalized_assignments.append(
+                    self._normalize_assignment(assignments[idx])
+                )
 
         try:
             normalized_date_key = (
@@ -1427,20 +1545,24 @@ class YBSApp:
         except (TypeError, ValueError):
             normalized_date_key = date_key
 
+        assignments_tuple = tuple(normalized_assignments)
+
         self._drag_data.update(
             {
-                "item": ("calendar", normalized_date_key, index),
-                "values": assignment_values,
+                "items": selected_indices,
+                "values": assignments_tuple,
                 "start_x": event.x_root,
                 "start_y": event.y_root,
                 "widget": None,
                 "active": False,
                 "source": "calendar",
                 "source_date_key": normalized_date_key,
-                "source_index": index,
-                "source_assignment": assignment_values,
+                "source_indices": selected_indices,
+                "source_assignments": assignments_tuple,
             }
         )
+
+        return "break"
 
     def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> None:
         if self._drag_data.get("source") != "calendar":
@@ -1458,8 +1580,8 @@ class YBSApp:
         if self._drag_data.get("source_date_key") != normalized_date_key:
             return
 
-        item_id = self._drag_data.get("item")
-        if not item_id:
+        items = self._drag_data.get("items")
+        if not items:
             return
 
         if not self._drag_data.get("active"):
@@ -1496,8 +1618,8 @@ class YBSApp:
             self._end_drag()
             return
 
-        item_id = self._drag_data.get("item")
-        if not item_id:
+        items = self._drag_data.get("items")
+        if not items:
             self._end_drag()
             return
 
@@ -1520,8 +1642,8 @@ class YBSApp:
                     normalized_key = None
 
         if normalized_key is not None:
-            values = self._drag_data.get("values", ())
-            if not isinstance(values, (tuple, list)) or not values:
+            raw_orders = self._drag_data.get("values", ())
+            if not isinstance(raw_orders, (tuple, list)) or not raw_orders:
                 self._queue.put(
                     (
                         "calendar_drop",
@@ -1531,9 +1653,10 @@ class YBSApp:
                     )
                 )
             else:
-                order_values = tuple(str(value) for value in values)
-                order_number = order_values[0] if len(order_values) > 0 else ""
-                company = order_values[1] if len(order_values) > 1 else ""
+                normalized_orders = tuple(
+                    self._normalize_assignment(order)
+                    for order in raw_orders
+                )
 
                 raw_source_key = self._drag_data.get("source_date_key")
                 normalized_source: DateKey | None = None
@@ -1551,43 +1674,38 @@ class YBSApp:
                 source_label = (
                     self._format_date_label(normalized_source)
                     if normalized_source is not None
-                    else ""
+                    else None
                 )
 
-                order_label = "order"
-                if order_number:
-                    order_label += f" {order_number}"
-                if company:
-                    order_label += f" ({company})"
-
-                if normalized_source is not None and normalized_source != normalized_key:
-                    message = f"Moved {order_label} from {source_label} to {target_label}."
-                elif normalized_source is not None and normalized_source == normalized_key:
-                    capitalized = order_label[0].upper() + order_label[1:]
-                    message = f"{capitalized} remains scheduled for {target_label}."
-                else:
-                    message = f"Assigned {order_label} to {target_label}."
+                message = self._format_assignment_move_message(
+                    normalized_orders,
+                    target_label,
+                    source_label=source_label,
+                    same_day=normalized_source == normalized_key,
+                )
 
                 payload: dict[str, object] = {
                     "date_key": normalized_key,
-                    "values": order_values,
+                    "orders": normalized_orders,
                 }
 
                 if normalized_source is not None:
                     payload["source_date_key"] = normalized_source
-                    source_index = self._drag_data.get("source_index")
-                    try:
-                        payload["source_index"] = int(source_index)
-                    except (TypeError, ValueError):
-                        pass
 
-                    source_assignment = self._drag_data.get("source_assignment")
-                    if isinstance(source_assignment, (tuple, list)):
-                        payload["source_assignment"] = tuple(
-                            str(value) for value in source_assignment
+                    source_indices = self._drag_data.get("source_indices", ())
+                    if isinstance(source_indices, (tuple, list)):
+                        payload["source_indices"] = tuple(
+                            int(index) for index in source_indices
                         )
-                    else:
-                        payload["source_assignment"] = order_values
+
+                    source_assignments = self._drag_data.get(
+                        "source_assignments", ()
+                    )
+                    if isinstance(source_assignments, (tuple, list)):
+                        payload["source_orders"] = tuple(
+                            self._normalize_assignment(order)
+                            for order in source_assignments
+                        )
 
                 self._queue.put(("calendar_drop", True, message, payload))
         else:
@@ -1603,14 +1721,24 @@ class YBSApp:
         self._end_drag()
 
     def _begin_drag(self) -> None:
-        item_id = self._drag_data.get("item")
+        items = self._drag_data.get("items")
         values = self._drag_data.get("values", ())
-        if not item_id or not isinstance(values, (tuple, list)):
+        if not items or not isinstance(values, (tuple, list)):
             return
 
-        order_values = tuple(str(value) for value in values)
-        text_parts = [part for part in order_values if part]
-        label_text = " - ".join(text_parts) if text_parts else ""
+        normalized_orders = [
+            self._normalize_assignment(value) for value in values
+        ]
+        labels = [self._format_assignment_label(order) for order in normalized_orders]
+        if not labels:
+            label_text = ""
+        elif len(labels) == 1:
+            label_text = labels[0]
+        else:
+            preview = ", ".join(labels[:3])
+            if len(labels) > 3:
+                preview += ", ..."
+            label_text = f"{len(labels)} orders: {preview}"
 
         drag_window = tk.Toplevel(self.root)
         drag_window.overrideredirect(True)
@@ -1632,7 +1760,7 @@ class YBSApp:
         label.pack()
 
         self._drag_data["widget"] = drag_window
-        self._drag_data["values"] = order_values
+        self._drag_data["values"] = tuple(normalized_orders)
         self._drag_data["active"] = True
 
         start_x = int(self._drag_data.get("start_x", 0))
@@ -1749,11 +1877,12 @@ class YBSApp:
             return
 
         date_key = payload.get("date_key")
-        values = payload.get("values")
+        orders = payload.get("orders")
         if (
             not isinstance(date_key, (tuple, list))
             or len(date_key) != 3
-            or not isinstance(values, (tuple, list))
+            or not isinstance(orders, (tuple, list))
+            or not orders
         ):
             return
 
@@ -1762,7 +1891,12 @@ class YBSApp:
         except (TypeError, ValueError):
             return
 
-        order_values = tuple(str(value) for value in values)
+        normalized_orders = [
+            self._normalize_assignment(order) for order in orders
+        ]
+        if not normalized_orders:
+            return
+
         raw_source_key = payload.get("source_date_key")
         normalized_source: DateKey | None = None
         if isinstance(raw_source_key, (tuple, list)) and len(raw_source_key) == 3:
@@ -1776,69 +1910,199 @@ class YBSApp:
                 normalized_source = None
 
         target_snapshot = self._capture_assignments_state(normalized_key)
-        source_snapshot: dict[str, Any] | None = None
-        if normalized_source is not None:
-            source_snapshot = self._capture_assignments_state(normalized_source)
-
-        source_assignment_raw = payload.get("source_assignment")
-        source_assignment: Tuple[str, ...] | None = None
-        if isinstance(source_assignment_raw, (tuple, list)):
-            source_assignment = tuple(str(value) for value in source_assignment_raw)
-
-        source_index_raw = payload.get("source_index")
-        if isinstance(source_index_raw, int):
-            source_index = source_index_raw
-        else:
-            try:
-                source_index = int(source_index_raw)
-            except (TypeError, ValueError):
-                source_index = None
-
-        removed_from_source = False
-        if normalized_source is not None:
-            assignments = self._calendar_assignments.get(normalized_source, [])
-            expected_assignment = source_assignment or order_values
-
-            removal_index: int | None = None
-            if (
-                isinstance(source_index, int)
-                and 0 <= source_index < len(assignments)
-            ):
-                candidate = assignments[source_index]
-                candidate_tuple = tuple(str(value) for value in candidate)
-                if candidate_tuple == expected_assignment:
-                    removal_index = source_index
-
-            if removal_index is None:
-                for idx, assignment in enumerate(assignments):
-                    if tuple(str(value) for value in assignment) == expected_assignment:
-                        removal_index = idx
-                        break
-
-            if removal_index is not None:
-                assignments.pop(removal_index)
-                if assignments:
-                    self._calendar_assignments[normalized_source] = assignments
-                else:
-                    self._calendar_assignments.pop(normalized_source, None)
-                self._update_day_cell_display(normalized_source)
-                removed_from_source = True
-
-        added_to_target = self._assign_order_to_day(
-            normalized_key, order_values, push_undo=False
+        source_snapshot: dict[str, Any] | None = (
+            self._capture_assignments_state(normalized_source)
+            if normalized_source is not None
+            else None
         )
 
+        def current_selection(listbox: tk.Listbox | None) -> list[int]:
+            if listbox is None:
+                return []
+            try:
+                return [int(i) for i in listbox.curselection()]
+            except (tk.TclError, TypeError, ValueError):
+                return []
+
+        target_day_cell = self._day_cells.get(normalized_key)
+        target_listbox = (
+            target_day_cell.orders_list if target_day_cell else None
+        )
+        target_selection_before = current_selection(target_listbox)
+
+        source_listbox: tk.Listbox | None = None
+        source_selection_before: list[int] = []
+        if normalized_source is not None:
+            source_day_cell = self._day_cells.get(normalized_source)
+            source_listbox = (
+                source_day_cell.orders_list if source_day_cell else None
+            )
+            source_selection_before = current_selection(source_listbox)
+
+        target_assignments = self._calendar_assignments.setdefault(
+            normalized_key, []
+        )
+
+        if normalized_source is not None and normalized_source == normalized_key:
+            source_assignments_ref = target_assignments
+        elif normalized_source is not None:
+            source_assignments_ref = self._calendar_assignments.get(
+                normalized_source
+            )
+        else:
+            source_assignments_ref = None
+
+        raw_source_orders = payload.get("source_orders")
+        normalized_source_orders: list[Tuple[str, str]] = []
+        if isinstance(raw_source_orders, (tuple, list)):
+            normalized_source_orders = [
+                self._normalize_assignment(order)
+                for order in raw_source_orders
+            ]
+        if not normalized_source_orders:
+            normalized_source_orders = list(normalized_orders)
+
+        source_indices_raw = payload.get("source_indices")
+        index_hints: list[int | None] = []
+        if isinstance(source_indices_raw, (tuple, list)):
+            for raw_index in source_indices_raw:
+                try:
+                    index_hints.append(int(raw_index))
+                except (TypeError, ValueError):
+                    index_hints.append(None)
+
+        removed_indices: list[int] = []
+        removed_from_source = False
+        if normalized_source is not None and source_assignments_ref:
+            assignments_list = source_assignments_ref
+            used_indices: set[int] = set()
+            for position, order in enumerate(normalized_source_orders):
+                index_hint = index_hints[position] if position < len(index_hints) else None
+                removal_index: int | None = None
+                if (
+                    isinstance(index_hint, int)
+                    and 0 <= index_hint < len(assignments_list)
+                    and index_hint not in used_indices
+                ):
+                    if self._normalize_assignment(assignments_list[index_hint]) == order:
+                        removal_index = index_hint
+                if removal_index is None:
+                    for idx, assignment in enumerate(assignments_list):
+                        if idx in used_indices:
+                            continue
+                        if self._normalize_assignment(assignment) == order:
+                            removal_index = idx
+                            break
+                if removal_index is not None:
+                    used_indices.add(removal_index)
+                    removed_indices.append(removal_index)
+
+            if removed_indices:
+                for idx in sorted(removed_indices, reverse=True):
+                    if 0 <= idx < len(assignments_list):
+                        assignments_list.pop(idx)
+                removed_from_source = True
+                if normalized_source != normalized_key:
+                    if assignments_list:
+                        self._calendar_assignments[normalized_source] = assignments_list
+                    else:
+                        self._calendar_assignments.pop(normalized_source, None)
+
+        added_to_target = False
+        target_indices: list[int] = []
+        for order in normalized_orders:
+            if order in target_assignments:
+                index = target_assignments.index(order)
+            else:
+                target_assignments.append(order)
+                added_to_target = True
+                index = len(target_assignments) - 1
+            target_indices.append(index)
+
+        removed_sorted = sorted(removed_indices)
+
+        def adjust_selection(selection: list[int], removed: list[int]) -> list[int]:
+            if not selection or not removed:
+                return list(selection)
+            adjusted: list[int] = []
+            removed_sorted_local = sorted(removed)
+            removed_set = set(removed_sorted_local)
+            for index in selection:
+                if index in removed_set:
+                    continue
+                shift = sum(1 for value in removed_sorted_local if value < index)
+                new_index = index - shift
+                if new_index >= 0:
+                    adjusted.append(new_index)
+            return adjusted
+
+        if normalized_source == normalized_key:
+            base_target_selection = adjust_selection(
+                target_selection_before, removed_sorted
+            )
+        else:
+            base_target_selection = list(target_selection_before)
+
+        combined_target_selection: list[int] = []
+        for idx in base_target_selection:
+            if idx not in combined_target_selection:
+                combined_target_selection.append(idx)
+        for idx in target_indices:
+            if idx not in combined_target_selection:
+                combined_target_selection.append(idx)
+
+        source_selection_after: list[int] = []
+        if (
+            normalized_source is not None
+            and normalized_source != normalized_key
+            and source_selection_before
+        ):
+            source_selection_after = adjust_selection(
+                source_selection_before, removed_sorted
+            )
+
+        self._update_day_cell_display(normalized_key)
+        if normalized_source is not None and normalized_source != normalized_key:
+            self._update_day_cell_display(normalized_source)
+
+        def apply_selection(listbox: tk.Listbox | None, indices: list[int]) -> None:
+            if listbox is None:
+                return
+            try:
+                size = listbox.size()
+            except tk.TclError:
+                return
+            listbox.selection_clear(0, tk.END)
+            valid_indices = [idx for idx in indices if 0 <= idx < size]
+            for idx in valid_indices:
+                listbox.selection_set(idx)
+            if valid_indices:
+                anchor_index = valid_indices[-1]
+                try:
+                    listbox.selection_anchor(anchor_index)
+                    listbox.activate(anchor_index)
+                except tk.TclError:
+                    pass
+
+        apply_selection(target_listbox, combined_target_selection)
+        if normalized_source is not None and normalized_source != normalized_key:
+            apply_selection(source_listbox, source_selection_after)
+
         undo_entries: dict[DateKey, dict[str, Any]] = {}
-        if added_to_target:
+        if added_to_target or (
+            removed_from_source and normalized_source == normalized_key
+        ):
             undo_entries[normalized_key] = dict(target_snapshot)
-        if removed_from_source and normalized_source is not None:
+        if removed_from_source and (
+            normalized_source is not None and normalized_source != normalized_key
+        ):
             entry_snapshot = source_snapshot or {"had_key": False, "previous": None}
             undo_entries[normalized_source] = dict(entry_snapshot)
 
         if undo_entries:
             self._push_undo_action({"kind": "assignments", "dates": undo_entries})
 
-        if removed_from_source and not added_to_target:
+        if added_to_target or removed_from_source:
             self._schedule_state_save()
 
     def _assign_order_to_day(
@@ -1848,9 +2112,7 @@ class YBSApp:
         *,
         push_undo: bool = True,
     ) -> bool:
-        order_number = order_values[0] if len(order_values) > 0 else ""
-        company = order_values[1] if len(order_values) > 1 else ""
-        normalized: Tuple[str, str] = (str(order_number), str(company))
+        normalized = self._normalize_assignment(order_values)
 
         snapshot = self._capture_assignments_state(date_key)
         assignments = self._calendar_assignments.setdefault(date_key, [])
@@ -1913,6 +2175,43 @@ class YBSApp:
             return f"{month:02d}/{day:02d}/{year}"
         else:
             return display_date.strftime("%B %d, %Y")
+
+    def _format_assignment_move_message(
+        self,
+        assignments: Iterable[Tuple[str, str]],
+        target_label: str,
+        *,
+        source_label: str | None = None,
+        same_day: bool = False,
+    ) -> str:
+        assignment_list = list(assignments)
+        if not assignment_list:
+            return ""
+
+        count = len(assignment_list)
+        if count == 1:
+            order_number = assignment_list[0][0].strip()
+            company = assignment_list[0][1].strip()
+            order_label = "order"
+            if order_number:
+                order_label += f" {order_number}"
+            if company:
+                order_label += f" ({company})"
+
+            if source_label and not same_day:
+                return f"Moved {order_label} from {source_label} to {target_label}."
+            if source_label:
+                capitalized = order_label[0].upper() + order_label[1:]
+                return f"{capitalized} remains scheduled for {target_label}."
+            return f"Assigned {order_label} to {target_label}."
+
+        order_phrase = f"{count} orders"
+        if source_label and not same_day:
+            return f"Moved {order_phrase} from {source_label} to {target_label}."
+        if source_label:
+            capitalized = order_phrase[0].upper() + order_phrase[1:]
+            return f"{capitalized} remain scheduled for {target_label}."
+        return f"Assigned {order_phrase} to {target_label}."
 
     def _format_removal_message(
         self, date_key: DateKey, assignment: Tuple[str, str]
