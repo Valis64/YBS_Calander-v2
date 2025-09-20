@@ -1528,6 +1528,7 @@ class YBSApp:
 
     def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
+        self._clear_other_day_selections(None)
         item_id = self.tree.identify_row(event.y)
         ctrl_pressed = self._is_control_pressed(event)
         shift_pressed = self._is_shift_pressed(event)
@@ -1703,6 +1704,7 @@ class YBSApp:
 
     def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> str | None:
         self._end_drag()
+        self._clear_other_day_selections(date_key)
 
         day_cell = self._day_cells.get(date_key)
         if not day_cell:
@@ -2121,6 +2123,38 @@ class YBSApp:
 
         self._calendar_hover = None
 
+    def _clear_other_day_selections(self, active_key: DateKey | None) -> None:
+        """Clear selections on all day listboxes except the active one."""
+
+        normalized_active: DateKey | None = None
+        if isinstance(active_key, (tuple, list)) and len(active_key) == 3:
+            try:
+                normalized_active = (
+                    int(active_key[0]),
+                    int(active_key[1]),
+                    int(active_key[2]),
+                )
+            except (TypeError, ValueError):
+                try:
+                    normalized_active = tuple(active_key)  # type: ignore[arg-type]
+                except TypeError:
+                    normalized_active = None
+
+        for key, day_cell in self._day_cells.items():
+            if active_key is not None and key == active_key:
+                continue
+            if normalized_active is not None and key == normalized_active:
+                continue
+
+            orders_list = getattr(day_cell, "orders_list", None)
+            if orders_list is None:
+                continue
+
+            try:
+                orders_list.selection_clear(0, tk.END)
+            except tk.TclError:
+                continue
+
     def _end_drag(self) -> None:
         widget = self._drag_data.get("widget")
         if widget is not None:
@@ -2351,6 +2385,8 @@ class YBSApp:
         apply_selection(target_listbox, combined_target_selection)
         if normalized_source is not None and normalized_source != normalized_key:
             apply_selection(source_listbox, source_selection_after)
+
+        self._clear_other_day_selections(normalized_key)
 
         undo_entries: dict[DateKey, dict[str, Any]] = {}
         if added_to_target or (
