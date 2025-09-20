@@ -1087,7 +1087,36 @@ class YBSApp:
         self._set_status(SUCCESS_COLOR, message)
 
     def _open_day_details(self, date_key: DateKey) -> None:
+        day_cell = self._day_cells.get(date_key)
+        cell_bounds: tuple[int, int, int, int] | None = None
+        if day_cell is not None:
+            cell_widget = getattr(day_cell, "frame", None)
+            if cell_widget is not None:
+                try:
+                    if cell_widget.winfo_exists():
+                        if cell_widget.winfo_ismapped():
+                            cell_widget.update_idletasks()
+                        else:
+                            self.root.update_idletasks()
+                        cell_x = cell_widget.winfo_rootx()
+                        cell_y = cell_widget.winfo_rooty()
+                        cell_width = cell_widget.winfo_width()
+                        cell_height = cell_widget.winfo_height()
+                        if cell_width <= 1:
+                            cell_width = cell_widget.winfo_reqwidth()
+                        if cell_height <= 1:
+                            cell_height = cell_widget.winfo_reqheight()
+                        cell_bounds = (
+                            cell_x,
+                            cell_y,
+                            max(int(cell_width), 1),
+                            max(int(cell_height), 1),
+                        )
+                except tk.TclError:
+                    cell_bounds = None
+
         window = tk.Toplevel(self.root)
+        window.withdraw()
         window.title(self._format_date_label(date_key))
         window.configure(bg=BACKGROUND_COLOR)
         window.transient(self.root)
@@ -1216,6 +1245,7 @@ class YBSApp:
             plural = "s" if removed_count != 1 else ""
             message = f"Cleared {removed_count} order{plural} from {date_label_text}."
             self._set_status(SUCCESS_COLOR, message)
+            close_dialog()
 
         def close_dialog() -> None:
             window.destroy()
@@ -1248,6 +1278,25 @@ class YBSApp:
         window.protocol("WM_DELETE_WINDOW", close_dialog)
 
         refresh_list()
+        window.update_idletasks()
+        if cell_bounds is not None:
+            cell_x, cell_y, cell_width, cell_height = cell_bounds
+            window_width = window.winfo_width()
+            window_height = window.winfo_height()
+            if window_width <= 1:
+                window_width = window.winfo_reqwidth()
+            if window_height <= 1:
+                window_height = window.winfo_reqheight()
+            target_x = int(cell_x + (cell_width - window_width) / 2)
+            target_y = int(cell_y + (cell_height - window_height) / 2)
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+            max_x = max(screen_width - window_width, 0)
+            max_y = max(screen_height - window_height, 0)
+            target_x = max(0, min(target_x, max_x))
+            target_y = max(0, min(target_y, max_y))
+            window.geometry(f"+{target_x}+{target_y}")
+        window.deiconify()
         window.focus_set()
 
     def _change_month(self, delta_months: int) -> None:
