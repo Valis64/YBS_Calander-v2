@@ -75,6 +75,7 @@ class YBSApp:
         self._calendar_notes: Dict[DateKey, str] = {}
         self._calendar_assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
         self._calendar_hover: DateKey | None = None
+        self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
         self._drag_data: dict[str, object] = {}
         self._state_path: Path = STATE_PATH
@@ -690,6 +691,7 @@ class YBSApp:
         self.month_label_var.set(first_of_month.strftime("%B %Y"))
 
         self._remove_calendar_hover()
+        self._day_cell_pointer_hover = None
         previous_active = self._active_day_header
 
         for date_key, day_cell in list(self._day_cells.items()):
@@ -777,6 +779,22 @@ class YBSApp:
                 header_label.bind(
                     "<Destroy>",
                     lambda event, key=date_key: self._on_day_header_destroy(event, key),
+                )
+                cell_frame.bind(
+                    "<Enter>",
+                    lambda event, key=date_key: self._on_day_cell_pointer_enter(event, key),
+                )
+                cell_frame.bind(
+                    "<Leave>",
+                    lambda event, key=date_key: self._on_day_cell_pointer_leave(event, key),
+                )
+                header_label.bind(
+                    "<Enter>",
+                    lambda event, key=date_key: self._on_day_cell_pointer_enter(event, key),
+                )
+                header_label.bind(
+                    "<Leave>",
+                    lambda event, key=date_key: self._on_day_cell_pointer_leave(event, key),
                 )
 
                 notes_text = tk.Text(
@@ -1008,6 +1026,120 @@ class YBSApp:
             day_cell.orders_list.configure(bg=orders_bg, fg=TEXT_COLOR)
         except tk.TclError:
             return
+
+        if (
+            self._day_cell_pointer_hover == date_key
+            and not self._drag_data.get("active")
+            and self._calendar_hover != date_key
+            and self._is_pointer_over_day_cell(day_cell)
+        ):
+            self._apply_day_cell_pointer_hover(date_key)
+
+    def _on_day_cell_pointer_enter(
+        self, event: tk.Event | None, date_key: DateKey
+    ) -> None:
+        if self._drag_data.get("active"):
+            return
+        self._apply_day_cell_pointer_hover(date_key, check_pointer=False)
+
+    def _on_day_cell_pointer_leave(
+        self, event: tk.Event | None, date_key: DateKey
+    ) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        destination_widget = None
+        if event is not None:
+            try:
+                x_root = int(getattr(event, "x_root"))
+                y_root = int(getattr(event, "y_root"))
+            except (TypeError, ValueError):
+                x_root = y_root = None
+            if x_root is not None and y_root is not None:
+                try:
+                    destination_widget = self.root.winfo_containing(x_root, y_root)
+                except tk.TclError:
+                    destination_widget = None
+
+        if self._widget_belongs_to_day_cell(destination_widget, day_cell):
+            return
+
+        if self._day_cell_pointer_hover == date_key:
+            self._day_cell_pointer_hover = None
+
+        if self._calendar_hover == date_key and self._drag_data.get("active"):
+            return
+
+        self._apply_day_cell_base_style(date_key)
+
+    def _widget_belongs_to_day_cell(
+        self, widget: tk.Misc | None, day_cell: DayCell | None
+    ) -> bool:
+        if widget is None or day_cell is None:
+            return False
+
+        frame = day_cell.frame
+        current = widget
+        while current is not None:
+            if current == frame:
+                return True
+            current = getattr(current, "master", None)
+        return False
+
+    def _is_pointer_over_day_cell(self, day_cell: DayCell) -> bool:
+        try:
+            pointer_x, pointer_y = self.root.winfo_pointerxy()
+        except tk.TclError:
+            return False
+
+        try:
+            widget = self.root.winfo_containing(pointer_x, pointer_y)
+        except tk.TclError:
+            return False
+
+        return self._widget_belongs_to_day_cell(widget, day_cell)
+
+    def _apply_day_cell_pointer_hover(
+        self, date_key: DateKey, *, check_pointer: bool = True
+    ) -> None:
+        if self._drag_data.get("active"):
+            return
+
+        if self._calendar_hover == date_key:
+            return
+
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        try:
+            if not day_cell.frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        if check_pointer and not self._is_pointer_over_day_cell(day_cell):
+            return
+
+        border_color = getattr(day_cell, "border_color", ACCENT_COLOR)
+        border_thickness = getattr(day_cell, "border_thickness", 1)
+        if self._active_day_header == date_key:
+            border_color = ACTIVE_DAY_BORDER_COLOR
+            border_thickness = max(border_thickness, 3)
+
+        try:
+            day_cell.frame.configure(
+                bg=DAY_CELL_HOVER_VALID,
+                highlightbackground=border_color,
+                highlightcolor=border_color,
+                highlightthickness=border_thickness,
+            )
+            day_cell.header_label.configure(bg=DAY_CELL_HOVER_VALID, fg=TEXT_COLOR)
+        except tk.TclError:
+            return
+
+        self._day_cell_pointer_hover = date_key
 
     def _save_day_notes(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
