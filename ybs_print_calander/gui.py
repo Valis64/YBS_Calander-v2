@@ -117,6 +117,8 @@ class YBSApp:
         self.root.bind_all("<Command-Shift-Z>", self._redo_last_action)
         self.root.bind_all("<Control-y>", self._redo_last_action)
         self.root.bind_all("<Command-y>", self._redo_last_action)
+        self.root.bind_all("<Control-a>", self._select_all)
+        self.root.bind_all("<Command-a>", self._select_all)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queue()
 
@@ -656,6 +658,138 @@ class YBSApp:
             except tk.TclError:
                 pass
 
+    def _select_all(self, event: tk.Event) -> str | None:
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return None
+
+        handled = False
+
+        entry_classes = (tk.Entry,)
+        try:
+            entry_classes = entry_classes + (ttk.Entry,)
+        except AttributeError:  # pragma: no cover - ttk not available
+            pass
+
+        if isinstance(widget, entry_classes):
+            try:
+                widget.selection_range(0, tk.END)
+                widget.icursor(tk.END)
+            except tk.TclError:
+                pass
+            handled = True
+        elif isinstance(widget, tk.Text):
+            try:
+                widget.tag_remove("sel", "1.0", tk.END)
+                widget.tag_add("sel", "1.0", "end-1c")
+                widget.mark_set("insert", "end-1c")
+            except tk.TclError:
+                pass
+            handled = True
+        elif isinstance(widget, tk.Listbox):
+            handled = True
+            try:
+                size = int(widget.size())
+            except (tk.TclError, ValueError):
+                size = 0
+
+            normalized_key: DateKey | None = None
+            for key, day_cell in self._day_cells.items():
+                if getattr(day_cell, "orders_list", None) is widget:
+                    normalized = self._normalize_date_key(key)
+                    if normalized is not None:
+                        normalized_key = normalized
+                    else:
+                        normalized_key = key if isinstance(key, tuple) else None
+                    break
+
+            if size > 0:
+                try:
+                    widget.selection_set(0, tk.END)
+                except tk.TclError:
+                    pass
+
+                anchor_index: int | None = None
+                if normalized_key is not None:
+                    anchor_hint = self._day_selection_anchor.get(normalized_key)
+                    if isinstance(anchor_hint, int) and 0 <= anchor_hint < size:
+                        anchor_index = anchor_hint
+
+                if anchor_index is None:
+                    try:
+                        active_index = int(widget.index(tk.ACTIVE))
+                    except (tk.TclError, ValueError):
+                        active_index = None
+                    if active_index is not None and 0 <= active_index < size:
+                        anchor_index = active_index
+
+                if anchor_index is None:
+                    selection = widget.curselection()
+                    if selection:
+                        try:
+                            anchor_index = int(selection[0])
+                        except (TypeError, ValueError):
+                            anchor_index = None
+
+                if anchor_index is None:
+                    anchor_index = 0
+
+                if 0 <= anchor_index < size:
+                    try:
+                        widget.selection_anchor(anchor_index)
+                    except tk.TclError:
+                        pass
+                    try:
+                        widget.activate(anchor_index)
+                    except tk.TclError:
+                        pass
+                    if normalized_key is not None:
+                        self._day_selection_anchor[normalized_key] = anchor_index
+            else:
+                if normalized_key is not None:
+                    self._day_selection_anchor.pop(normalized_key, None)
+        elif widget is self.tree:
+            handled = True
+            children = list(self.tree.get_children(""))
+            if children:
+                anchor = self._normalize_tree_anchor(children)
+                if anchor is None:
+                    anchor = children[0]
+                try:
+                    self.tree.selection_set(children)
+                except tk.TclError:
+                    pass
+                if anchor is not None and anchor in children:
+                    try:
+                        self.tree.focus(anchor)
+                    except tk.TclError:
+                        pass
+                    try:
+                        self.tree.activate(anchor)
+                    except tk.TclError:
+                        pass
+                    try:
+                        self.tree.see(anchor)
+                    except tk.TclError:
+                        pass
+                    self._tree_selection_anchor = anchor
+                else:
+                    self._tree_selection_anchor = None
+            else:
+                try:
+                    self.tree.selection_remove(self.tree.selection())
+                except tk.TclError:
+                    pass
+                self._tree_selection_anchor = None
+
+        if handled:
+            try:
+                widget.focus_set()
+            except tk.TclError:
+                pass
+            return "break"
+        return None
+
     def _on_close(self) -> None:
         if self._state_save_after_id is not None:
             try:
@@ -1063,6 +1197,8 @@ class YBSApp:
                     "<Command-Y>",
                     lambda event: (self._invoke_text_widget_redo(event), "break")[1],
                 )
+                notes_text.bind("<Control-a>", self._select_all)
+                notes_text.bind("<Command-a>", self._select_all)
 
                 orders_list = tk.Listbox(
                     cell_frame,
