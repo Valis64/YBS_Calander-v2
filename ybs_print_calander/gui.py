@@ -11,7 +11,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
-from typing import Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
 
@@ -78,6 +78,8 @@ class YBSApp:
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_save_after_id: str | None = None
+        self._undo_stack: list[dict[str, Any]] = []
+        self._undo_stack_limit = 100
 
         self._load_state()
         self._reset_drag_state()
@@ -91,6 +93,8 @@ class YBSApp:
 
         self._configure_style()
         self._build_layout()
+        self.root.bind_all("<Control-z>", self._undo_last_action)
+        self.root.bind_all("<Command-z>", self._undo_last_action)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queue()
 
@@ -194,6 +198,219 @@ class YBSApp:
             self._state_save_after_id = self.root.after(1000, self._save_state)
         except tk.TclError:
             self._state_save_after_id = None
+
+    def _normalize_date_key(self, date_key: object) -> DateKey | None:
+        if isinstance(date_key, (tuple, list)) and len(date_key) == 3:
+            try:
+                return (int(date_key[0]), int(date_key[1]), int(date_key[2]))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _capture_assignments_state(self, date_key: DateKey) -> dict[str, Any]:
+        had_key = date_key in self._calendar_assignments
+        if not had_key:
+            return {"had_key": False, "previous": None}
+
+        assignments = self._calendar_assignments.get(date_key, [])
+        previous: list[Tuple[str, str]] = []
+        for entry in assignments:
+            if isinstance(entry, (list, tuple)):
+                first = str(entry[0]) if len(entry) > 0 else ""
+                second = str(entry[1]) if len(entry) > 1 else ""
+                previous.append((first, second))
+        return {"had_key": True, "previous": previous}
+
+    def _capture_notes_state(self, date_key: DateKey) -> dict[str, Any]:
+        had_key = date_key in self._calendar_notes
+        previous = self._calendar_notes.get(date_key) if had_key else None
+        if isinstance(previous, str):
+            return {"had_key": had_key, "previous": previous}
+        return {"had_key": had_key, "previous": None}
+
+    def _push_undo_action(self, action: dict[str, Any]) -> None:
+        if not isinstance(action, dict):
+            return
+
+        kind = action.get("kind")
+        normalized_action: dict[str, Any]
+
+        if kind == "assignments":
+            raw_dates = action.get("dates")
+            if not isinstance(raw_dates, dict) or not raw_dates:
+                return
+
+            normalized_dates: dict[DateKey, dict[str, Any]] = {}
+            for raw_key, info in raw_dates.items():
+                normalized_key = self._normalize_date_key(raw_key)
+                if normalized_key is None:
+                    continue
+
+                had_key = bool(info.get("had_key"))
+                previous_raw = info.get("previous")
+                previous_list: list[Tuple[str, str]] | None = None
+                if isinstance(previous_raw, list):
+                    previous_list = []
+                    for entry in previous_raw:
+                        if isinstance(entry, (list, tuple)):
+                            first = str(entry[0]) if len(entry) > 0 else ""
+                            second = str(entry[1]) if len(entry) > 1 else ""
+                            previous_list.append((first, second))
+
+                normalized_dates[normalized_key] = {
+                    "had_key": had_key,
+                    "previous": previous_list,
+                }
+
+            if not normalized_dates:
+                return
+
+            normalized_action = {"kind": "assignments", "dates": normalized_dates}
+        elif kind == "notes":
+            raw_key = action.get("date_key")
+            normalized_key = self._normalize_date_key(raw_key)
+            if normalized_key is None:
+                return
+
+            had_key = bool(action.get("had_key"))
+            previous_raw = action.get("previous")
+            previous_value: str | None
+            if isinstance(previous_raw, str):
+                previous_value = previous_raw
+            elif previous_raw is None:
+                previous_value = None
+            else:
+                previous_value = str(previous_raw)
+
+            normalized_action = {
+                "kind": "notes",
+                "date_key": normalized_key,
+                "had_key": had_key,
+                "previous": previous_value,
+            }
+        else:
+            return
+
+        self._undo_stack.append(normalized_action)
+        limit = getattr(self, "_undo_stack_limit", 0)
+        if isinstance(limit, int) and limit > 0 and len(self._undo_stack) > limit:
+            del self._undo_stack[: len(self._undo_stack) - limit]
+
+    def _undo_last_action(self, event: tk.Event | None = None) -> str | None:
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Text):
+            try:
+                undo_enabled = bool(widget.cget("undo"))
+            except tk.TclError:
+                undo_enabled = False
+            if undo_enabled:
+                try:
+                    widget.edit_undo()
+                except tk.TclError:
+                    pass
+                else:
+                    return "break"
+
+        if not self._undo_stack:
+            self._set_status(FAIL_COLOR, "Nothing to undo.")
+            return "break" if event is not None else None
+
+        action = self._undo_stack.pop()
+        kind = action.get("kind")
+        restored = False
+        status_message = ""
+
+        if kind == "assignments":
+            entries = action.get("dates")
+            if isinstance(entries, dict):
+                restored_labels: list[str] = []
+                for raw_key, info in entries.items():
+                    normalized_key = self._normalize_date_key(raw_key)
+                    if normalized_key is None:
+                        continue
+
+                    previous_raw = info.get("previous")
+                    restored_assignments: list[Tuple[str, str]] = []
+                    if isinstance(previous_raw, list):
+                        for entry in previous_raw:
+                            if isinstance(entry, (list, tuple)):
+                                first = str(entry[0]) if len(entry) > 0 else ""
+                                second = str(entry[1]) if len(entry) > 1 else ""
+                                restored_assignments.append((first, second))
+
+                    if restored_assignments:
+                        self._calendar_assignments[normalized_key] = restored_assignments
+                    else:
+                        self._calendar_assignments.pop(normalized_key, None)
+
+                    self._update_day_cell_display(normalized_key)
+                    restored_labels.append(self._format_date_label(normalized_key))
+                    restored = True
+
+                if restored_labels:
+                    if len(restored_labels) == 1:
+                        status_message = (
+                            f"Undo: restored assignments for {restored_labels[0]}."
+                        )
+                    else:
+                        status_message = (
+                            "Undo: restored assignments for "
+                            + ", ".join(restored_labels)
+                            + "."
+                        )
+        elif kind == "notes":
+            normalized_key = self._normalize_date_key(action.get("date_key"))
+            if normalized_key is not None:
+                previous_raw = action.get("previous")
+                had_key = bool(action.get("had_key"))
+
+                if isinstance(previous_raw, str):
+                    restored_text = previous_raw
+                    self._calendar_notes[normalized_key] = restored_text
+                elif previous_raw is None and not had_key:
+                    restored_text = ""
+                    self._calendar_notes.pop(normalized_key, None)
+                else:
+                    restored_text = str(previous_raw) if previous_raw is not None else ""
+                    if restored_text:
+                        self._calendar_notes[normalized_key] = restored_text
+                    else:
+                        self._calendar_notes.pop(normalized_key, None)
+
+                day_cell = self._day_cells.get(normalized_key)
+                if day_cell:
+                    notes_widget = day_cell.notes_text
+                    try:
+                        focused_widget = self.root.focus_get()
+                    except tk.TclError:
+                        focused_widget = None
+
+                    has_focus = focused_widget is notes_widget
+                    if widget is notes_widget:
+                        has_focus = True
+
+                    notes_widget.delete("1.0", tk.END)
+                    if restored_text:
+                        notes_widget.insert("1.0", restored_text)
+                    if has_focus:
+                        try:
+                            notes_widget.focus_set()
+                        except tk.TclError:
+                            pass
+
+                status_message = (
+                    f"Undo: restored notes for {self._format_date_label(normalized_key)}."
+                )
+                restored = True
+
+        if restored:
+            self._schedule_state_save()
+            if status_message:
+                self._set_status(SUCCESS_COLOR, status_message)
+        else:
+            self._set_status(FAIL_COLOR, "Nothing to undo.")
+
+        return "break" if event is not None else None
 
     def _on_close(self) -> None:
         if self._state_save_after_id is not None:
@@ -537,6 +754,8 @@ class YBSApp:
                     insertbackground=TEXT_COLOR,
                     relief="flat",
                     bd=0,
+                    undo=True,
+                    autoseparators=True,
                 )
                 notes_text.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2, 2))
 
@@ -652,6 +871,10 @@ class YBSApp:
             self._set_status(FAIL_COLOR, "No orders scheduled for this day.")
             return
 
+        snapshot = self._capture_assignments_state(date_key)
+        self._push_undo_action(
+            {"kind": "assignments", "dates": {date_key: snapshot}}
+        )
         removed_count = len(assignments)
         self._calendar_assignments.pop(date_key, None)
         self._update_day_cell_display(date_key)
@@ -700,11 +923,28 @@ class YBSApp:
 
         text_value = day_cell.notes_text.get("1.0", "end-1c")
         changed = False
+        snapshot = self._capture_notes_state(date_key)
         if text_value.strip():
             if self._calendar_notes.get(date_key) != text_value:
+                self._push_undo_action(
+                    {
+                        "kind": "notes",
+                        "date_key": date_key,
+                        "previous": snapshot.get("previous"),
+                        "had_key": snapshot.get("had_key"),
+                    }
+                )
                 self._calendar_notes[date_key] = text_value
                 changed = True
         elif date_key in self._calendar_notes:
+            self._push_undo_action(
+                {
+                    "kind": "notes",
+                    "date_key": date_key,
+                    "previous": snapshot.get("previous"),
+                    "had_key": snapshot.get("had_key"),
+                }
+            )
             self._calendar_notes.pop(date_key, None)
             changed = True
 
@@ -738,6 +978,10 @@ class YBSApp:
             )
             return
 
+        snapshot = self._capture_assignments_state(date_key)
+        self._push_undo_action(
+            {"kind": "assignments", "dates": {date_key: snapshot}}
+        )
         removed_assignment = assignments.pop(index)
         if assignments:
             self._calendar_assignments[date_key] = assignments
@@ -842,6 +1086,10 @@ class YBSApp:
                 update_button_states()
                 return
 
+            snapshot = self._capture_assignments_state(date_key)
+            self._push_undo_action(
+                {"kind": "assignments", "dates": {date_key: snapshot}}
+            )
             removed_assignment = assignments.pop(index)
             if assignments:
                 self._calendar_assignments[date_key] = assignments
@@ -863,6 +1111,10 @@ class YBSApp:
                 refresh_list()
                 return
 
+            snapshot = self._capture_assignments_state(date_key)
+            self._push_undo_action(
+                {"kind": "assignments", "dates": {date_key: snapshot}}
+            )
             removed_count = len(assignments)
             self._calendar_assignments.pop(date_key, None)
             self._update_day_cell_display(date_key)
@@ -1458,6 +1710,11 @@ class YBSApp:
             except (TypeError, ValueError):
                 normalized_source = None
 
+        target_snapshot = self._capture_assignments_state(normalized_key)
+        source_snapshot: dict[str, Any] | None = None
+        if normalized_source is not None:
+            source_snapshot = self._capture_assignments_state(normalized_source)
+
         source_assignment_raw = payload.get("source_assignment")
         source_assignment: Tuple[str, ...] | None = None
         if isinstance(source_assignment_raw, (tuple, list)):
@@ -1502,29 +1759,50 @@ class YBSApp:
                 self._update_day_cell_display(normalized_source)
                 removed_from_source = True
 
-        added_to_target = self._assign_order_to_day(normalized_key, order_values)
+        added_to_target = self._assign_order_to_day(
+            normalized_key, order_values, push_undo=False
+        )
+
+        undo_entries: dict[DateKey, dict[str, Any]] = {}
+        if added_to_target:
+            undo_entries[normalized_key] = dict(target_snapshot)
+        if removed_from_source and normalized_source is not None:
+            entry_snapshot = source_snapshot or {"had_key": False, "previous": None}
+            undo_entries[normalized_source] = dict(entry_snapshot)
+
+        if undo_entries:
+            self._push_undo_action({"kind": "assignments", "dates": undo_entries})
+
         if removed_from_source and not added_to_target:
             self._schedule_state_save()
 
     def _assign_order_to_day(
-        self, date_key: DateKey, order_values: Tuple[str, ...]
+        self,
+        date_key: DateKey,
+        order_values: Tuple[str, ...],
+        *,
+        push_undo: bool = True,
     ) -> bool:
         order_number = order_values[0] if len(order_values) > 0 else ""
         company = order_values[1] if len(order_values) > 1 else ""
         normalized: Tuple[str, str] = (str(order_number), str(company))
 
+        snapshot = self._capture_assignments_state(date_key)
         assignments = self._calendar_assignments.setdefault(date_key, [])
-        changed = False
-        if normalized not in assignments:
-            assignments.append(normalized)
-            changed = True
 
+        if normalized in assignments:
+            self._update_day_cell_display(date_key)
+            return False
+
+        if push_undo:
+            self._push_undo_action(
+                {"kind": "assignments", "dates": {date_key: snapshot}}
+            )
+
+        assignments.append(normalized)
         self._update_day_cell_display(date_key)
-
-        if changed:
-            self._schedule_state_save()
-
-        return changed
+        self._schedule_state_save()
+        return True
 
     def _update_day_cell_display(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
