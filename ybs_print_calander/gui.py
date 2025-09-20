@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
+import json
 import queue
 import threading
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from tkinter import ttk
 from typing import Dict, Iterable, List, Tuple
 
@@ -32,6 +34,9 @@ ORDERS_LIST_BACKGROUND = "#0d274a"
 DRAG_THRESHOLD = 5
 
 DateKey = Tuple[int, int, int]
+
+
+STATE_PATH = Path.home() / ".ybs_print_calander" / "state.json"
 
 
 @dataclass
@@ -69,6 +74,11 @@ class YBSApp:
         self._calendar_assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
         self._calendar_hover: DateKey | None = None
         self._drag_data: dict[str, object] = {}
+        self._state_path: Path = STATE_PATH
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state_save_after_id: str | None = None
+
+        self._load_state()
         self._reset_drag_state()
 
         self.username_var = tk.StringVar()
@@ -77,7 +87,124 @@ class YBSApp:
 
         self._configure_style()
         self._build_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queue()
+
+    @staticmethod
+    def _serialize_date_key(date_key: DateKey) -> str:
+        try:
+            year, month, day = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            return f"{date_key[0]}-{date_key[1]}-{date_key[2]}"
+        return f"{year:04d}-{month:02d}-{day:02d}"
+
+    @staticmethod
+    def _deserialize_date_key(key: str) -> DateKey | None:
+        if not isinstance(key, str):
+            return None
+        parts = key.split("-")
+        if len(parts) != 3:
+            return None
+        try:
+            return (int(parts[0]), int(parts[1]), int(parts[2]))
+        except (TypeError, ValueError):
+            return None
+
+    def _load_state(self) -> None:
+        notes: Dict[DateKey, str] = {}
+        assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
+
+        data: object | None = None
+        try:
+            with self._state_path.open("r", encoding="utf-8") as state_file:
+                data = json.load(state_file)
+        except FileNotFoundError:
+            data = None
+        except (OSError, json.JSONDecodeError):
+            data = None
+
+        if isinstance(data, dict):
+            raw_notes = data.get("notes", {})
+            if isinstance(raw_notes, dict):
+                for key_str, value in raw_notes.items():
+                    date_key = self._deserialize_date_key(key_str)
+                    if date_key is None or not isinstance(value, str):
+                        continue
+                    notes[date_key] = value
+
+            raw_assignments = data.get("assignments", {})
+            if isinstance(raw_assignments, dict):
+                for key_str, value in raw_assignments.items():
+                    date_key = self._deserialize_date_key(key_str)
+                    if date_key is None or not isinstance(value, list):
+                        continue
+
+                    normalized_assignments: List[Tuple[str, str]] = []
+                    for entry in value:
+                        if isinstance(entry, (list, tuple)):
+                            first = str(entry[0]) if len(entry) > 0 else ""
+                            second = str(entry[1]) if len(entry) > 1 else ""
+                            normalized_assignments.append((first, second))
+                        elif isinstance(entry, str):
+                            normalized_assignments.append((entry, ""))
+
+                    if normalized_assignments:
+                        assignments[date_key] = normalized_assignments
+
+        self._calendar_notes = notes
+        self._calendar_assignments = assignments
+
+    def _save_state(self) -> None:
+        self._state_save_after_id = None
+
+        notes = {
+            self._serialize_date_key(key): value
+            for key, value in self._calendar_notes.items()
+        }
+        assignments = {
+            self._serialize_date_key(key): [list(item) for item in value]
+            for key, value in self._calendar_assignments.items()
+        }
+
+        state = {"notes": notes, "assignments": assignments}
+
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._state_path.open("w", encoding="utf-8") as state_file:
+                json.dump(state, state_file, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _schedule_state_save(self) -> None:
+        if self._state_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._state_save_after_id)
+            except tk.TclError:
+                pass
+
+        try:
+            self._state_save_after_id = self.root.after(1000, self._save_state)
+        except tk.TclError:
+            self._state_save_after_id = None
+
+    def _on_close(self) -> None:
+        if self._state_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._state_save_after_id)
+            except tk.TclError:
+                pass
+            self._state_save_after_id = None
+
+        self._save_state()
+
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _configure_style(self) -> None:
         style = ttk.Style()
@@ -462,10 +589,17 @@ class YBSApp:
             return
 
         text_value = day_cell.notes_text.get("1.0", "end-1c")
+        changed = False
         if text_value.strip():
-            self._calendar_notes[date_key] = text_value
-        else:
+            if self._calendar_notes.get(date_key) != text_value:
+                self._calendar_notes[date_key] = text_value
+                changed = True
+        elif date_key in self._calendar_notes:
             self._calendar_notes.pop(date_key, None)
+            changed = True
+
+        if changed:
+            self._schedule_state_save()
 
     def _open_day_details(self, date_key: DateKey) -> None:
         window = tk.Toplevel(self.root)
@@ -565,6 +699,7 @@ class YBSApp:
                 self._calendar_assignments.pop(date_key, None)
 
             self._update_day_cell_display(date_key)
+            self._schedule_state_save()
             next_index = min(index, len(assignments) - 1)
             refresh_list(select_index=next_index if assignments else None)
 
@@ -581,6 +716,7 @@ class YBSApp:
             removed_count = len(assignments)
             self._calendar_assignments.pop(date_key, None)
             self._update_day_cell_display(date_key)
+            self._schedule_state_save()
             refresh_list()
 
             date_label_text = self._format_date_label(date_key)
@@ -926,6 +1062,7 @@ class YBSApp:
 
         order_values = tuple(str(value) for value in values)
         self._assign_order_to_day(normalized_key, order_values)
+        self._schedule_state_save()
 
     def _assign_order_to_day(self, date_key: DateKey, order_values: Tuple[str, ...]) -> None:
         order_number = order_values[0] if len(order_values) > 0 else ""
@@ -933,10 +1070,15 @@ class YBSApp:
         normalized: Tuple[str, str] = (str(order_number), str(company))
 
         assignments = self._calendar_assignments.setdefault(date_key, [])
+        changed = False
         if normalized not in assignments:
             assignments.append(normalized)
+            changed = True
 
         self._update_day_cell_display(date_key)
+
+        if changed:
+            self._schedule_state_save()
 
     def _update_day_cell_display(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
