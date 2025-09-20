@@ -1738,6 +1738,7 @@ class YBSApp:
 
         children = list(self.tree.get_children(""))
         anchor = self._normalize_tree_anchor(children)
+        current_selection = set(self.tree.selection())
 
         if shift_pressed and children:
             if anchor is None:
@@ -1759,7 +1760,6 @@ class YBSApp:
                 pass
             self._tree_selection_anchor = anchor
         elif ctrl_pressed:
-            current_selection = set(self.tree.selection())
             if item_id in current_selection:
                 try:
                     self.tree.selection_remove(item_id)
@@ -1776,11 +1776,14 @@ class YBSApp:
                 if anchor is None:
                     self._tree_selection_anchor = item_id
         else:
-            try:
-                self.tree.selection_set((item_id,))
-            except tk.TclError:
-                pass
-            self._tree_selection_anchor = item_id
+            if item_id in current_selection and current_selection:
+                self._tree_selection_anchor = item_id
+            else:
+                try:
+                    self.tree.selection_set((item_id,))
+                except tk.TclError:
+                    pass
+                self._tree_selection_anchor = item_id
 
         try:
             self.tree.focus(item_id)
