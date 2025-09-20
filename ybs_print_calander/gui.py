@@ -5,7 +5,10 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import json
+import os
 import queue
+import re
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -52,6 +55,12 @@ ABOUT_MESSAGE = (
 DRAG_THRESHOLD = 5
 
 DateKey = Tuple[int, int, int]
+
+
+XRANDR_MONITOR_PATTERN = re.compile(
+    r"^\s*\S+\s+connected(?:\s+primary)?\s+(?P<w>\d+)x(?P<h>\d+)\+(?P<x>-?\d+)\+(?P<y>-?\d+)",
+    re.IGNORECASE,
+)
 
 
 STATE_PATH = Path.home() / ".ybs_print_calander" / "state.json"
@@ -109,6 +118,8 @@ class YBSApp:
         self._undo_stack_limit = 100
         self._redo_stack: list[dict[str, Any]] = []
         self._redo_stack_limit = self._undo_stack_limit
+        self._cached_monitor_bounds: tuple[int, int, int, int] | None = None
+        self._cached_monitor_geometry: tuple[int, int, int, int] | None = None
 
         self._load_state()
         self._reset_drag_state()
@@ -122,6 +133,7 @@ class YBSApp:
 
         self._configure_style()
         self._build_layout()
+        self.root.bind("<Configure>", self._invalidate_monitor_cache, add="+")
         self.root.bind_all("<Control-z>", self._undo_last_action)
         self.root.bind_all("<Command-z>", self._undo_last_action)
         self.root.bind_all("<Control-Shift-Z>", self._redo_last_action)
@@ -180,6 +192,275 @@ class YBSApp:
         if sys.platform == "darwin":
             control_masks += (0x0010,)
         return any(cls._event_state_has_flag(event, mask) for mask in control_masks)
+
+    def _invalidate_monitor_cache(self, *_: object) -> None:
+        """Clear cached monitor information."""
+
+        self._cached_monitor_bounds = None
+        self._cached_monitor_geometry = None
+
+    def _get_monitor_bounds(
+        self, reference: tuple[int, int] | None = None
+    ) -> tuple[int, int, int, int] | None:
+        """Return the bounding rectangle for the monitor containing ``reference``."""
+
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+
+        default_reference = reference is None
+        geometry: tuple[int, int, int, int] | None = None
+        if reference is None:
+            try:
+                root_x = int(self.root.winfo_rootx())
+                root_y = int(self.root.winfo_rooty())
+                root_width = int(self.root.winfo_width())
+                root_height = int(self.root.winfo_height())
+            except tk.TclError:
+                reference = (0, 0)
+            else:
+                if root_width <= 1:
+                    root_width = int(self.root.winfo_reqwidth())
+                if root_height <= 1:
+                    root_height = int(self.root.winfo_reqheight())
+                geometry = (root_x, root_y, root_width, root_height)
+                reference = (
+                    root_x + root_width // 2,
+                    root_y + root_height // 2,
+                )
+
+        assert reference is not None
+        ref_x = int(reference[0])
+        ref_y = int(reference[1])
+
+        if (
+            default_reference
+            and geometry is not None
+            and self._cached_monitor_bounds is not None
+            and self._cached_monitor_geometry == geometry
+        ):
+            return self._cached_monitor_bounds
+
+        bounds: tuple[int, int, int, int] | None = None
+
+        if bounds is None and sys.platform.startswith("win"):
+            try:
+                import ctypes
+                from ctypes import wintypes
+            except Exception:
+                pass
+            else:
+                MonitorFromPoint = getattr(
+                    ctypes.windll.user32, "MonitorFromPoint", None
+                )
+                GetMonitorInfo = getattr(ctypes.windll.user32, "GetMonitorInfoW", None)
+                if MonitorFromPoint and GetMonitorInfo:
+                    MONITOR_DEFAULTTONEAREST = 2
+
+                    class POINT(ctypes.Structure):
+                        _fields_ = [
+                            ("x", wintypes.LONG),
+                            ("y", wintypes.LONG),
+                        ]
+
+                    class RECT(ctypes.Structure):
+                        _fields_ = [
+                            ("left", wintypes.LONG),
+                            ("top", wintypes.LONG),
+                            ("right", wintypes.LONG),
+                            ("bottom", wintypes.LONG),
+                        ]
+
+                    class MONITORINFO(ctypes.Structure):
+                        _fields_ = [
+                            ("cbSize", wintypes.DWORD),
+                            ("rcMonitor", RECT),
+                            ("rcWork", RECT),
+                            ("dwFlags", wintypes.DWORD),
+                        ]
+
+                    point = POINT(ref_x, ref_y)
+                    monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST)
+                    if monitor:
+                        info = MONITORINFO()
+                        info.cbSize = ctypes.sizeof(info)
+                        if GetMonitorInfo(monitor, ctypes.byref(info)):
+                            rect = info.rcMonitor
+                            left, top, right, bottom = (
+                                int(rect.left),
+                                int(rect.top),
+                                int(rect.right),
+                                int(rect.bottom),
+                            )
+                            if left < right and top < bottom:
+                                bounds = (left, top, right, bottom)
+
+        if bounds is None:
+            try:
+                from screeninfo import get_monitors  # type: ignore
+            except Exception:
+                pass
+            else:
+                monitors: list[tuple[int, int, int, int]] = []
+                for monitor in get_monitors():
+                    try:
+                        left = int(getattr(monitor, "x"))
+                        top = int(getattr(monitor, "y"))
+                        width = int(getattr(monitor, "width"))
+                        height = int(getattr(monitor, "height"))
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                    if width <= 0 or height <= 0:
+                        continue
+                    monitors.append((left, top, left + width, top + height))
+                for left, top, right, bottom in monitors:
+                    if left <= ref_x < right and top <= ref_y < bottom:
+                        bounds = (left, top, right, bottom)
+                        break
+                if bounds is None and monitors:
+                    bounds = monitors[0]
+
+        if (
+            bounds is None
+            and sys.platform.startswith(("linux", "freebsd"))
+            and os.environ.get("DISPLAY")
+        ):
+            try:
+                result = subprocess.run(
+                    ["xrandr", "--current"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=0.5,
+                )
+            except (OSError, subprocess.SubprocessError):
+                result = None
+            if result and result.returncode == 0 and result.stdout:
+                monitors: list[tuple[int, int, int, int]] = []
+                for line in result.stdout.splitlines():
+                    match = XRANDR_MONITOR_PATTERN.match(line)
+                    if not match:
+                        continue
+                    try:
+                        width = int(match.group("w"))
+                        height = int(match.group("h"))
+                        left = int(match.group("x"))
+                        top = int(match.group("y"))
+                    except (TypeError, ValueError):
+                        continue
+                    if width <= 0 or height <= 0:
+                        continue
+                    monitors.append((left, top, left + width, top + height))
+                for left, top, right, bottom in monitors:
+                    if left <= ref_x < right and top <= ref_y < bottom:
+                        bounds = (left, top, right, bottom)
+                        break
+                if bounds is None and monitors:
+                    bounds = monitors[0]
+
+        if bounds is None:
+            vroot_bounds: tuple[int, int, int, int] | None = None
+            try:
+                vroot_x = int(self.root.winfo_vrootx())
+                vroot_y = int(self.root.winfo_vrooty())
+                vroot_width = int(self.root.winfo_vrootwidth())
+                vroot_height = int(self.root.winfo_vrootheight())
+            except (tk.TclError, ValueError):
+                vroot_width = vroot_height = 0
+            else:
+                if vroot_width > 0 and vroot_height > 0:
+                    vroot_bounds = (
+                        vroot_x,
+                        vroot_y,
+                        vroot_x + vroot_width,
+                        vroot_y + vroot_height,
+                    )
+
+            try:
+                screen_width = int(self.root.winfo_screenwidth())
+                screen_height = int(self.root.winfo_screenheight())
+            except (tk.TclError, ValueError):
+                screen_width = screen_height = 0
+
+            if screen_width > 0 and screen_height > 0:
+                try:
+                    root_left = int(self.root.winfo_rootx())
+                    root_top = int(self.root.winfo_rooty())
+                except tk.TclError:
+                    root_left = root_top = 0
+
+                left = root_left
+                top = root_top
+                if vroot_bounds is not None:
+                    vleft, vtop, vright, vbottom = vroot_bounds
+                    if vright - vleft >= screen_width:
+                        max_left = vright - screen_width
+                        left = max(min(left, max_left), vleft)
+                    else:
+                        left = vleft
+                    if vbottom - vtop >= screen_height:
+                        max_top = vbottom - screen_height
+                        top = max(min(top, max_top), vtop)
+                    else:
+                        top = vtop
+
+                bounds = (
+                    left,
+                    top,
+                    left + screen_width,
+                    top + screen_height,
+                )
+            elif vroot_bounds is not None:
+                bounds = vroot_bounds
+
+        if bounds is not None and default_reference and geometry is not None:
+            self._cached_monitor_bounds = bounds
+            self._cached_monitor_geometry = geometry
+
+        return bounds
+
+    def _constrain_to_monitor(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        reference: tuple[int, int] | None = None,
+    ) -> tuple[int, int]:
+        bounds = self._get_monitor_bounds(reference=reference)
+
+        try:
+            x_value = int(x)
+        except (TypeError, ValueError):
+            x_value = 0
+        try:
+            y_value = int(y)
+        except (TypeError, ValueError):
+            y_value = 0
+        try:
+            width_value = max(int(width), 1)
+        except (TypeError, ValueError):
+            width_value = 1
+        try:
+            height_value = max(int(height), 1)
+        except (TypeError, ValueError):
+            height_value = 1
+
+        if not bounds:
+            return (x_value, y_value)
+
+        left, top, right, bottom = bounds
+        if right <= left or bottom <= top:
+            return (x_value, y_value)
+
+        max_x = max(right - width_value, left)
+        max_y = max(bottom - height_value, top)
+
+        constrained_x = max(left, min(x_value, max_x))
+        constrained_y = max(top, min(y_value, max_y))
+
+        return (constrained_x, constrained_y)
 
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
@@ -1847,23 +2128,49 @@ class YBSApp:
 
         refresh_list()
         window.update_idletasks()
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+        try:
+            root_x = int(self.root.winfo_rootx())
+            root_y = int(self.root.winfo_rooty())
+            root_width = int(self.root.winfo_width())
+            root_height = int(self.root.winfo_height())
+        except tk.TclError:
+            root_x = root_y = 0
+            root_width = root_height = 0
+        else:
+            if root_width <= 1:
+                root_width = int(self.root.winfo_reqwidth())
+            if root_height <= 1:
+                root_height = int(self.root.winfo_reqheight())
+
+        window_width = int(window.winfo_width())
+        window_height = int(window.winfo_height())
+        if window_width <= 1:
+            window_width = int(window.winfo_reqwidth())
+        if window_height <= 1:
+            window_height = int(window.winfo_reqheight())
+
         if cell_bounds is not None:
             cell_x, cell_y, cell_width, cell_height = cell_bounds
-            window_width = window.winfo_width()
-            window_height = window.winfo_height()
-            if window_width <= 1:
-                window_width = window.winfo_reqwidth()
-            if window_height <= 1:
-                window_height = window.winfo_reqheight()
             target_x = int(cell_x + (cell_width - window_width) / 2)
             target_y = int(cell_y + (cell_height - window_height) / 2)
-            screen_width = window.winfo_screenwidth()
-            screen_height = window.winfo_screenheight()
-            max_x = max(screen_width - window_width, 0)
-            max_y = max(screen_height - window_height, 0)
-            target_x = max(0, min(target_x, max_x))
-            target_y = max(0, min(target_y, max_y))
-            window.geometry(f"+{target_x}+{target_y}")
+        elif root_width > 0 and root_height > 0:
+            target_x = int(root_x + (root_width - window_width) / 2)
+            target_y = int(root_y + (root_height - window_height) / 2)
+        else:
+            target_x = int(root_x)
+            target_y = int(root_y)
+
+        target_x, target_y = self._constrain_to_monitor(
+            target_x,
+            target_y,
+            window_width,
+            window_height,
+        )
+        window.geometry(f"+{target_x}+{target_y}")
         window.deiconify()
         window.focus_set()
 
@@ -2705,7 +3012,37 @@ class YBSApp:
         widget = self._drag_data.get("widget")
         if widget is None:
             return
-        widget.geometry(f"+{x_root + 16}+{y_root + 16}")
+        try:
+            widget.update_idletasks()
+        except tk.TclError:
+            pass
+
+        try:
+            window_width = int(widget.winfo_width())
+            window_height = int(widget.winfo_height())
+        except tk.TclError:
+            window_width = window_height = 0
+
+        if window_width <= 1:
+            try:
+                window_width = int(widget.winfo_reqwidth())
+            except (tk.TclError, ValueError):
+                window_width = 1
+        if window_height <= 1:
+            try:
+                window_height = int(widget.winfo_reqheight())
+            except (tk.TclError, ValueError):
+                window_height = 1
+
+        base_x = int(x_root) + 16
+        base_y = int(y_root) + 16
+        target_x, target_y = self._constrain_to_monitor(
+            base_x,
+            base_y,
+            window_width,
+            window_height,
+        )
+        widget.geometry(f"+{target_x}+{target_y}")
 
     def _detect_calendar_target(self, x_root: int, y_root: int) -> Dict[str, object] | None:
         try:
