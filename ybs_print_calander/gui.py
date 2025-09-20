@@ -89,6 +89,7 @@ class YBSApp:
         self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
         self._drag_data: dict[str, object] = {}
+        self._tree_selection_anchor: str | None = None
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_save_after_id: str | None = None
@@ -631,6 +632,10 @@ class YBSApp:
         self.tree.bind("<ButtonPress-1>", self._on_order_press)
         self.tree.bind("<B1-Motion>", self._on_order_drag)
         self.tree.bind("<ButtonRelease-1>", self._on_order_release)
+        self.tree.bind("<KeyPress-Up>", self._on_tree_key_navigate)
+        self.tree.bind("<KeyPress-Down>", self._on_tree_key_navigate)
+        self.tree.bind("<KeyPress-Left>", self._on_tree_key_navigate)
+        self.tree.bind("<KeyPress-Right>", self._on_tree_key_navigate)
 
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(2, weight=1)
@@ -1524,7 +1529,156 @@ class YBSApp:
             "source_date_key": None,
             "source_indices": (),
             "source_assignments": (),
+            "selection_snapshot": (),
+            "selection_anchor": None,
+            "focus_item": None,
+            "active_index": None,
         }
+
+    def _normalize_tree_anchor(self, children: list[str]) -> str | None:
+        anchor = self._tree_selection_anchor
+        if anchor and anchor in children:
+            return anchor
+        self._tree_selection_anchor = None
+        return None
+
+    def _restore_drag_selection(self) -> None:
+        snapshot = self._drag_data.get("selection_snapshot")
+        if not isinstance(snapshot, (tuple, list)):
+            return
+
+        source = self._drag_data.get("source")
+        if source == "tree":
+            children = list(self.tree.get_children(""))
+            preserved = [item for item in snapshot if item in children]
+            try:
+                if preserved:
+                    self.tree.selection_set(preserved)
+                else:
+                    self.tree.selection_remove(self.tree.selection())
+            except tk.TclError:
+                return
+
+            focus_item = self._drag_data.get("focus_item")
+            if isinstance(focus_item, str) and focus_item in children:
+                try:
+                    self.tree.focus(focus_item)
+                except tk.TclError:
+                    pass
+
+            anchor = self._drag_data.get("selection_anchor")
+            if isinstance(anchor, str) and anchor in children:
+                self._tree_selection_anchor = anchor
+            elif not preserved:
+                self._tree_selection_anchor = None
+        elif source == "calendar":
+            date_key = self._drag_data.get("source_date_key")
+            day_cell = self._day_cells.get(date_key) if date_key is not None else None
+            orders_list = getattr(day_cell, "orders_list", None)
+            if orders_list is None:
+                return
+
+            try:
+                orders_list.selection_clear(0, tk.END)
+            except tk.TclError:
+                return
+
+            for raw_index in snapshot:
+                try:
+                    index = int(raw_index)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    orders_list.selection_set(index)
+                except tk.TclError:
+                    continue
+
+            anchor_index = self._drag_data.get("selection_anchor")
+            try:
+                anchor_value = int(anchor_index)
+            except (TypeError, ValueError):
+                anchor_value = None
+
+            if anchor_value is not None:
+                try:
+                    orders_list.selection_anchor(anchor_value)
+                except tk.TclError:
+                    pass
+
+            active_index = self._drag_data.get("active_index")
+            try:
+                active_value = int(active_index)
+            except (TypeError, ValueError):
+                active_value = None
+
+            if active_value is not None:
+                try:
+                    orders_list.activate(active_value)
+                except tk.TclError:
+                    pass
+
+    def _on_tree_key_navigate(self, event: tk.Event) -> str | None:
+        keysym = str(getattr(event, "keysym", ""))
+        if keysym not in {"Up", "Down", "Left", "Right"}:
+            return None
+
+        direction = -1 if keysym in {"Up", "Left"} else 1
+        return self._navigate_tree_with_keyboard(direction, event)
+
+    def _navigate_tree_with_keyboard(
+        self, direction: int, event: tk.Event | None
+    ) -> str | None:
+        children = list(self.tree.get_children(""))
+        if not children:
+            return "break"
+
+        extend_selection = self._is_shift_pressed(event)
+
+        focus_item = self.tree.focus()
+        if focus_item not in children:
+            focus_index = 0 if direction >= 0 else len(children) - 1
+            focus_item = children[focus_index]
+        else:
+            focus_index = children.index(focus_item)
+
+        new_index = focus_index + direction
+        new_index = max(0, min(new_index, len(children) - 1))
+        target = children[new_index]
+
+        if extend_selection:
+            anchor = self._normalize_tree_anchor(children)
+            if anchor is None or anchor not in children:
+                anchor = focus_item if focus_item in children else target
+                if anchor not in children:
+                    anchor = target
+                self._tree_selection_anchor = anchor
+            start_index = children.index(anchor)
+            end_index = new_index
+            if start_index > end_index:
+                start_index, end_index = end_index, start_index
+            selection = children[start_index : end_index + 1]
+            try:
+                self.tree.selection_set(selection)
+            except tk.TclError:
+                pass
+        else:
+            try:
+                self.tree.selection_set((target,))
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = target
+
+        try:
+            self.tree.focus(target)
+        except tk.TclError:
+            pass
+
+        try:
+            self.tree.see(target)
+        except tk.TclError:
+            pass
+
+        return "break"
 
     def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
@@ -1536,6 +1690,7 @@ class YBSApp:
         if not item_id:
             if not ctrl_pressed and not shift_pressed:
                 self.tree.selection_remove(self.tree.selection())
+                self._tree_selection_anchor = None
             self._drag_data.update(
                 {
                     "items": (),
@@ -1548,17 +1703,21 @@ class YBSApp:
                     "source_date_key": None,
                     "source_indices": (),
                     "source_assignments": (),
+                    "selection_snapshot": (),
+                    "selection_anchor": self._tree_selection_anchor,
+                    "focus_item": None,
+                    "active_index": None,
                 }
             )
             return "break"
 
         children = list(self.tree.get_children(""))
-        anchor = self.tree.focus()
-        if anchor not in children:
-            anchor = None
+        anchor = self._normalize_tree_anchor(children)
 
         if shift_pressed and children:
             if anchor is None:
+                anchor = item_id
+            if anchor not in children:
                 anchor = item_id
             try:
                 start_index = children.index(anchor)
@@ -1568,17 +1727,40 @@ class YBSApp:
             else:
                 if start_index > end_index:
                     start_index, end_index = end_index, start_index
-                selection = children[start_index : end_index + 1]
-            self.tree.selection_set(selection)
+                selection = tuple(children[start_index : end_index + 1])
+            try:
+                self.tree.selection_set(selection)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = anchor
         elif ctrl_pressed:
-            if item_id in self.tree.selection():
-                self.tree.selection_remove(item_id)
+            current_selection = set(self.tree.selection())
+            if item_id in current_selection:
+                try:
+                    self.tree.selection_remove(item_id)
+                except tk.TclError:
+                    pass
+                current_selection.discard(item_id)
+                if not current_selection:
+                    self._tree_selection_anchor = None
             else:
-                self.tree.selection_add(item_id)
+                try:
+                    self.tree.selection_add(item_id)
+                except tk.TclError:
+                    pass
+                if anchor is None:
+                    self._tree_selection_anchor = item_id
         else:
-            self.tree.selection_set((item_id,))
+            try:
+                self.tree.selection_set((item_id,))
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = item_id
 
-        self.tree.focus(item_id)
+        try:
+            self.tree.focus(item_id)
+        except tk.TclError:
+            pass
 
         selected_set = set(self.tree.selection())
         ordered_selection = tuple(
@@ -1604,6 +1786,10 @@ class YBSApp:
                 "source_date_key": None,
                 "source_indices": (),
                 "source_assignments": assignments_tuple,
+                "selection_snapshot": ordered_selection,
+                "selection_anchor": self._tree_selection_anchor,
+                "focus_item": item_id,
+                "active_index": None,
             }
         )
 
@@ -1614,6 +1800,8 @@ class YBSApp:
         if not items:
             return None
 
+        self._restore_drag_selection()
+
         if not self._drag_data.get("active"):
             start_x = int(self._drag_data.get("start_x", event.x_root))
             start_y = int(self._drag_data.get("start_y", event.y_root))
@@ -1623,14 +1811,16 @@ class YBSApp:
             ):
                 self._begin_drag()
                 if self._drag_data.get("active"):
+                    self._restore_drag_selection()
                     self._position_drag_window(event.x_root, event.y_root)
                     target_info = self._detect_calendar_target(
                         event.x_root, event.y_root
                     )
                     self._update_calendar_hover(target_info)
                     return "break"
-            return None
+            return "break"
 
+        self._restore_drag_selection()
         self._position_drag_window(event.x_root, event.y_root)
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         self._update_calendar_hover(target_info)
@@ -1639,6 +1829,10 @@ class YBSApp:
     def _on_order_release(self, event: tk.Event) -> str | None:
         items = self._drag_data.get("items")
         drag_was_active = bool(self._drag_data.get("active"))
+
+        if items:
+            self._restore_drag_selection()
+
         if not items:
             if drag_was_active:
                 self._end_drag()
@@ -1726,6 +1920,10 @@ class YBSApp:
                     "source_date_key": date_key,
                     "source_indices": (),
                     "source_assignments": (),
+                    "selection_snapshot": (),
+                    "selection_anchor": None,
+                    "focus_item": None,
+                    "active_index": None,
                 }
             )
             return "break"
@@ -1778,6 +1976,11 @@ class YBSApp:
 
         orders_list.activate(index)
 
+        try:
+            anchor_value = int(orders_list.index(tk.ANCHOR))
+        except (tk.TclError, ValueError):
+            anchor_value = None
+
         current_selection = orders_list.curselection()
         selected_indices: tuple[int, ...] = tuple(int(i) for i in current_selection)
 
@@ -1811,6 +2014,10 @@ class YBSApp:
                 "source_date_key": normalized_date_key,
                 "source_indices": selected_indices,
                 "source_assignments": assignments_tuple,
+                "selection_snapshot": selected_indices,
+                "selection_anchor": anchor_value,
+                "focus_item": None,
+                "active_index": index,
             }
         )
 
@@ -1836,6 +2043,8 @@ class YBSApp:
         if not items:
             return None
 
+        self._restore_drag_selection()
+
         if not self._drag_data.get("active"):
             start_x = int(self._drag_data.get("start_x", event.x_root))
             start_y = int(self._drag_data.get("start_y", event.y_root))
@@ -1845,14 +2054,16 @@ class YBSApp:
             ):
                 self._begin_drag()
                 if self._drag_data.get("active"):
+                    self._restore_drag_selection()
                     self._position_drag_window(event.x_root, event.y_root)
                     target_info = self._detect_calendar_target(
                         event.x_root, event.y_root
                     )
                     self._update_calendar_hover(target_info)
                     return "break"
-            return None
+            return "break"
 
+        self._restore_drag_selection()
         self._position_drag_window(event.x_root, event.y_root)
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         self._update_calendar_hover(target_info)
@@ -1879,6 +2090,8 @@ class YBSApp:
             return "break" if drag_was_active else None
 
         items = self._drag_data.get("items")
+        if items:
+            self._restore_drag_selection()
         if not items:
             self._end_drag()
             return "break" if drag_was_active else None
@@ -2669,6 +2882,8 @@ class YBSApp:
 
     def _apply_order_filter(self, event: object | None = None) -> None:
         filter_text = self._order_filter_var.get().strip().lower()
+
+        self._tree_selection_anchor = None
 
         for item in self.tree.get_children():
             self.tree.delete(item)
