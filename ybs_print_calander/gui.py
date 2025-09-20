@@ -1827,27 +1827,26 @@ class YBSApp:
 
         self._restore_drag_selection()
 
-        if not self._drag_data.get("active"):
-            start_x = int(self._drag_data.get("start_x", event.x_root))
-            start_y = int(self._drag_data.get("start_y", event.y_root))
+        x_root = int(getattr(event, "x_root", 0))
+        y_root = int(getattr(event, "y_root", 0))
+
+        drag_active = bool(self._drag_data.get("active"))
+        if not drag_active:
+            start_x = int(self._drag_data.get("start_x", x_root))
+            start_y = int(self._drag_data.get("start_y", y_root))
             if (
-                abs(event.x_root - start_x) >= DRAG_THRESHOLD
-                or abs(event.y_root - start_y) >= DRAG_THRESHOLD
+                abs(x_root - start_x) >= DRAG_THRESHOLD
+                or abs(y_root - start_y) >= DRAG_THRESHOLD
             ):
                 self._begin_drag()
-                if self._drag_data.get("active"):
+                drag_active = bool(self._drag_data.get("active"))
+                if drag_active:
                     self._restore_drag_selection()
-                    self._position_drag_window(event.x_root, event.y_root)
-                    target_info = self._detect_calendar_target(
-                        event.x_root, event.y_root
-                    )
-                    self._update_calendar_hover(target_info)
-                    return "break"
-            return "break"
 
-        self._restore_drag_selection()
-        self._position_drag_window(event.x_root, event.y_root)
-        target_info = self._detect_calendar_target(event.x_root, event.y_root)
+        if drag_active:
+            self._position_drag_window(x_root, y_root)
+
+        target_info = self._detect_calendar_target(x_root, y_root)
         self._update_calendar_hover(target_info)
         return "break"
 
@@ -2148,48 +2147,32 @@ class YBSApp:
         return "break"
 
     def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> str | None:
-        if self._drag_data.get("source") != "calendar":
-            return None
-
-        try:
-            normalized_date_key = (
-                int(date_key[0]),
-                int(date_key[1]),
-                int(date_key[2]),
-            )
-        except (TypeError, ValueError):
-            normalized_date_key = date_key
-
-        if self._drag_data.get("source_date_key") != normalized_date_key:
-            return None
-
         items = self._drag_data.get("items")
         if not items:
             return None
 
         self._restore_drag_selection()
 
-        if not self._drag_data.get("active"):
-            start_x = int(self._drag_data.get("start_x", event.x_root))
-            start_y = int(self._drag_data.get("start_y", event.y_root))
+        x_root = int(getattr(event, "x_root", 0))
+        y_root = int(getattr(event, "y_root", 0))
+
+        drag_active = bool(self._drag_data.get("active"))
+        if not drag_active:
+            start_x = int(self._drag_data.get("start_x", x_root))
+            start_y = int(self._drag_data.get("start_y", y_root))
             if (
-                abs(event.x_root - start_x) >= DRAG_THRESHOLD
-                or abs(event.y_root - start_y) >= DRAG_THRESHOLD
+                abs(x_root - start_x) >= DRAG_THRESHOLD
+                or abs(y_root - start_y) >= DRAG_THRESHOLD
             ):
                 self._begin_drag()
-                if self._drag_data.get("active"):
+                drag_active = bool(self._drag_data.get("active"))
+                if drag_active:
                     self._restore_drag_selection()
-                    self._position_drag_window(event.x_root, event.y_root)
-                    target_info = self._detect_calendar_target(
-                        event.x_root, event.y_root
-                    )
-                    self._update_calendar_hover(target_info)
-                    return "break"
-            return "break"
 
-        self._restore_drag_selection()
-        self._position_drag_window(event.x_root, event.y_root)
-        target_info = self._detect_calendar_target(event.x_root, event.y_root)
+        if drag_active:
+            self._position_drag_window(x_root, y_root)
+
+        target_info = self._detect_calendar_target(x_root, y_root)
         self._update_calendar_hover(target_info)
         return "break"
 
