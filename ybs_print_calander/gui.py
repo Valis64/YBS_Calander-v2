@@ -7,6 +7,7 @@ import datetime as dt
 import queue
 import threading
 import tkinter as tk
+from dataclasses import dataclass
 from tkinter import ttk
 from typing import Dict, Iterable, List, Tuple
 
@@ -18,10 +19,24 @@ TEXT_COLOR = "#f8f9fa"
 SUCCESS_COLOR = "#28a745"
 FAIL_COLOR = "#dc3545"
 PENDING_COLOR = "#f0ad4e"
+DAY_CELL_BACKGROUND = "#102a54"
+DAY_CELL_HOVER_VALID = "#25497a"
+DAY_CELL_HOVER_INVALID = "#5a1f1f"
 
 DRAG_THRESHOLD = 5
 
 DateKey = Tuple[int, int, int]
+
+
+@dataclass
+class DayCell:
+    """Container for widgets that make up a calendar day cell."""
+
+    frame: tk.Frame
+    header_label: tk.Label
+    notes_text: tk.Text
+    orders_list: tk.Listbox
+    default_bg: str
 
 
 class YBSApp:
@@ -40,10 +55,10 @@ class YBSApp:
         self._current_year = today.year
         self._current_month = today.month
 
-        self._calendar_cells: Dict[DateKey, Tuple[str, str]] = {}
-        self._calendar_cell_lookup: Dict[Tuple[str, str], DateKey] = {}
+        self._day_cells: Dict[DateKey, DayCell] = {}
+        self._calendar_notes: Dict[DateKey, str] = {}
         self._calendar_assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
-        self._calendar_hover: tuple[str, str] | None = None
+        self._calendar_hover: DateKey | None = None
         self._drag_data: dict[str, object] = {}
         self._reset_drag_state()
 
@@ -235,32 +250,17 @@ class YBSApp:
         )
         next_button.grid(row=0, column=2, padx=(10, 0))
 
-        columns = [f"day_{i}" for i in range(7)]
-        self.calendar_tree = ttk.Treeview(
-            calendar_frame,
-            columns=columns,
-            show="headings",
-            style="Dark.Treeview",
-            height=7,
-            selectmode="none",
-        )
+        self.calendar_grid = ttk.Frame(calendar_frame, style="Dark.TFrame")
+        self.calendar_grid.grid(row=1, column=0, sticky="nsew")
 
-        self.calendar_tree.tag_configure("hover_valid", background="#25497a")
-        self.calendar_tree.tag_configure("hover_invalid", background="#5a1f1f")
-
-        for index, day_name in enumerate(calendar.day_abbr):
-            column_id = columns[index]
-            self.calendar_tree.heading(column_id, text=day_name, anchor="center")
-            self.calendar_tree.column(column_id, anchor="center", width=50, stretch=True)
-
-        self.calendar_tree.bind("<Double-1>", self._on_calendar_double_click)
-
-        self._render_calendar()
-
-        self.calendar_tree.grid(row=1, column=0, sticky="nsew")
+        for column_index in range(7):
+            self.calendar_grid.columnconfigure(column_index, weight=1, uniform="calendar")
+        self.calendar_grid.rowconfigure(0, weight=0)
 
         calendar_frame.columnconfigure(0, weight=1)
         calendar_frame.rowconfigure(1, weight=1)
+
+        self._render_calendar()
 
         content_paned.add(calendar_frame, weight=2)
 
@@ -270,77 +270,146 @@ class YBSApp:
         first_of_month = dt.date(year, month, 1)
         self.month_label_var.set(first_of_month.strftime("%B %Y"))
 
-        columns = list(self.calendar_tree["columns"])
-
         self._remove_calendar_hover()
 
-        for item in self.calendar_tree.get_children():
-            self.calendar_tree.delete(item)
+        for date_key, day_cell in list(self._day_cells.items()):
+            self._save_day_notes(date_key)
+            day_cell.frame.destroy()
 
-        self._calendar_cells.clear()
-        self._calendar_cell_lookup.clear()
+        self._day_cells.clear()
+
+        for child in self.calendar_grid.winfo_children():
+            child.destroy()
 
         month_structure = calendar.Calendar().monthdayscalendar(year, month)
 
-        for week in month_structure:
-            row_values: List[str] = []
-            for day in week:
+        for column_index in range(7):
+            header_label = ttk.Label(
+                self.calendar_grid,
+                text=calendar.day_abbr[column_index],
+                style="Dark.TLabel",
+                anchor="center",
+            )
+            header_label.grid(row=0, column=column_index, sticky="nsew", padx=2, pady=(0, 6))
+
+        for row_index, week in enumerate(month_structure, start=1):
+            self.calendar_grid.rowconfigure(row_index, weight=1, uniform="calendar_rows")
+            for column_index, day in enumerate(week):
                 if day == 0:
-                    row_values.append("")
+                    placeholder = tk.Frame(
+                        self.calendar_grid,
+                        bg=BACKGROUND_COLOR,
+                        bd=0,
+                        highlightthickness=0,
+                    )
+                    placeholder.grid(
+                        row=row_index, column=column_index, sticky="nsew", padx=2, pady=2
+                    )
                     continue
+
                 date_key = (year, month, day)
-                assignments = self._calendar_assignments.get(date_key, [])
-                row_values.append(self._format_day_cell(day, assignments))
+                cell_frame = tk.Frame(
+                    self.calendar_grid,
+                    bg=DAY_CELL_BACKGROUND,
+                    highlightbackground=ACCENT_COLOR,
+                    highlightcolor=ACCENT_COLOR,
+                    highlightthickness=1,
+                    bd=0,
+                )
+                cell_frame.grid(row=row_index, column=column_index, sticky="nsew", padx=2, pady=2)
+                cell_frame.grid_propagate(False)
+                cell_frame.configure(width=110, height=110)
+                cell_frame.columnconfigure(0, weight=1)
+                cell_frame.rowconfigure(1, weight=1)
+                cell_frame.rowconfigure(2, weight=1)
 
-            while len(row_values) < len(columns):
-                row_values.append("")
+                header_label = tk.Label(
+                    cell_frame,
+                    text=str(day),
+                    anchor="nw",
+                    bg=DAY_CELL_BACKGROUND,
+                    fg=TEXT_COLOR,
+                    font=("TkDefaultFont", 10, "bold"),
+                    padx=4,
+                    pady=2,
+                )
+                header_label.grid(row=0, column=0, sticky="ew")
 
-            item_id = self.calendar_tree.insert("", tk.END, values=row_values)
-            for index, day in enumerate(week):
-                if day == 0:
-                    continue
-                column_name = columns[index]
-                date_key = (year, month, day)
-                self._calendar_cells[date_key] = (item_id, column_name)
-                self._calendar_cell_lookup[(item_id, column_name)] = date_key
+                notes_text = tk.Text(
+                    cell_frame,
+                    height=3,
+                    wrap=tk.WORD,
+                    bg="#0f3460",
+                    fg=TEXT_COLOR,
+                    insertbackground=TEXT_COLOR,
+                    relief="flat",
+                    bd=0,
+                )
+                notes_text.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2, 2))
 
-        self.calendar_tree.state(["disabled"])
+                orders_list = tk.Listbox(
+                    cell_frame,
+                    height=3,
+                    activestyle="none",
+                    exportselection=False,
+                )
+                orders_list.configure(
+                    bg="#0d274a",
+                    fg=TEXT_COLOR,
+                    highlightbackground=ACCENT_COLOR,
+                    highlightcolor=ACCENT_COLOR,
+                    selectbackground="#1e90ff",
+                    selectforeground=TEXT_COLOR,
+                    relief="flat",
+                    bd=0,
+                )
+                orders_list.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 4))
+
+                day_cell = DayCell(
+                    frame=cell_frame,
+                    header_label=header_label,
+                    notes_text=notes_text,
+                    orders_list=orders_list,
+                    default_bg=DAY_CELL_BACKGROUND,
+                )
+                self._day_cells[date_key] = day_cell
+
+                existing_notes = self._calendar_notes.get(date_key, "")
+                if existing_notes:
+                    notes_text.insert("1.0", existing_notes)
+
+                notes_text.bind(
+                    "<FocusOut>",
+                    lambda event, key=date_key: self._save_day_notes(key),
+                )
+
+                cell_frame.bind(
+                    "<Double-Button-1>",
+                    lambda event, key=date_key: self._open_day_details(key),
+                )
+                notes_text.bind(
+                    "<Double-Button-1>",
+                    lambda event, key=date_key: self._open_day_details(key),
+                )
+                orders_list.bind(
+                    "<Double-Button-1>",
+                    lambda event, key=date_key: self._open_day_details(key),
+                )
+
+                self._update_day_cell_display(date_key)
+
         self._calendar_hover = None
 
-    def _on_calendar_double_click(self, event: tk.Event) -> None:
-        region = self.calendar_tree.identify("region", event.x, event.y)
-        if region != "cell":
+    def _save_day_notes(self, date_key: DateKey) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
             return
 
-        row_id = self.calendar_tree.identify_row(event.y)
-        column = self.calendar_tree.identify_column(event.x)
-        if not row_id or not column:
-            return
-
-        try:
-            column_index = int(column.lstrip("#")) - 1
-        except ValueError:
-            return
-
-        columns = list(self.calendar_tree["columns"])
-        if column_index < 0 or column_index >= len(columns):
-            return
-
-        column_name = columns[column_index]
-        date_key = self._calendar_cell_lookup.get((row_id, column_name))
-        if not date_key:
-            return
-
-        try:
-            normalized_key: DateKey = (
-                int(date_key[0]),
-                int(date_key[1]),
-                int(date_key[2]),
-            )
-        except (TypeError, ValueError):
-            return
-
-        self._open_day_details(normalized_key)
+        text_value = day_cell.notes_text.get("1.0", "end-1c")
+        if text_value.strip():
+            self._calendar_notes[date_key] = text_value
+        else:
+            self._calendar_notes.pop(date_key, None)
 
     def _open_day_details(self, date_key: DateKey) -> None:
         window = tk.Toplevel(self.root)
@@ -390,17 +459,6 @@ class YBSApp:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(2, weight=1)
 
-        def format_assignment(assignment: Tuple[str, str]) -> str:
-            order_number = assignment[0].strip()
-            company = assignment[1].strip()
-            if order_number and company:
-                return f"{order_number} - {company}"
-            if order_number:
-                return order_number
-            if company:
-                return company
-            return "Unnamed order"
-
         def update_button_states(*_: object) -> None:
             assignments = self._calendar_assignments.get(date_key, [])
             has_assignments = bool(assignments)
@@ -416,7 +474,7 @@ class YBSApp:
             assignments = self._calendar_assignments.get(date_key, [])
             listbox.delete(0, tk.END)
             for assignment in assignments:
-                listbox.insert(tk.END, format_assignment(assignment))
+                listbox.insert(tk.END, self._format_assignment_label(assignment))
             listbox.selection_clear(0, tk.END)
             if (
                 select_index is not None
@@ -687,82 +745,93 @@ class YBSApp:
         widget.geometry(f"+{x_root + 16}+{y_root + 16}")
 
     def _detect_calendar_target(self, x_root: int, y_root: int) -> Dict[str, object] | None:
-        calendar_x = self.calendar_tree.winfo_rootx()
-        calendar_y = self.calendar_tree.winfo_rooty()
-        width = self.calendar_tree.winfo_width()
-        height = self.calendar_tree.winfo_height()
+        try:
+            grid_x = self.calendar_grid.winfo_rootx()
+            grid_y = self.calendar_grid.winfo_rooty()
+            grid_width = self.calendar_grid.winfo_width()
+            grid_height = self.calendar_grid.winfo_height()
+        except tk.TclError:
+            return None
 
         if not (
-            calendar_x <= x_root <= calendar_x + width
-            and calendar_y <= y_root <= calendar_y + height
+            grid_x <= x_root <= grid_x + grid_width
+            and grid_y <= y_root <= grid_y + grid_height
         ):
             return None
 
-        relative_x = x_root - calendar_x
-        relative_y = y_root - calendar_y
-        row_id = self.calendar_tree.identify_row(relative_y)
-        column = self.calendar_tree.identify_column(relative_x)
+        for date_key, day_cell in self._day_cells.items():
+            frame = day_cell.frame
+            if not frame.winfo_viewable():
+                continue
 
-        if not row_id or not column:
-            return {"item": row_id, "column": column, "day": None}
+            cell_x = frame.winfo_rootx()
+            cell_y = frame.winfo_rooty()
+            cell_width = frame.winfo_width()
+            cell_height = frame.winfo_height()
 
-        try:
-            column_index = int(column.lstrip("#")) - 1
-        except ValueError:
-            return {"item": row_id, "column": column, "day": None}
+            if (
+                cell_x <= x_root <= cell_x + cell_width
+                and cell_y <= y_root <= cell_y + cell_height
+            ):
+                return {
+                    "date_key": date_key,
+                    "day": date_key[2],
+                    "frame": frame,
+                }
 
-        columns = self.calendar_tree["columns"]
-        if column_index < 0 or column_index >= len(columns):
-            return {"item": row_id, "column": column, "day": None}
-
-        column_name = columns[column_index]
-        date_key = self._calendar_cell_lookup.get((row_id, column_name))
-        day_value = date_key[2] if date_key else None
-        return {
-            "item": row_id,
-            "column": column_name,
-            "day": day_value,
-            "date_key": date_key,
-        }
+        return {"date_key": None, "day": None, "frame": None}
 
     def _update_calendar_hover(self, target_info: Dict[str, object] | None) -> None:
-        if not target_info or not target_info.get("item"):
+        if not target_info:
             self._remove_calendar_hover()
             return
 
-        item_id = str(target_info["item"])
-        day_value = target_info.get("day")
-        is_valid = day_value is not None
-        self._apply_calendar_hover(item_id, is_valid)
-
-    def _apply_calendar_hover(self, item_id: str, is_valid: bool) -> None:
-        tag_to_apply = "hover_valid" if is_valid else "hover_invalid"
-
-        if self._calendar_hover and self._calendar_hover[0] != item_id:
+        date_key = target_info.get("date_key")
+        if date_key:
+            self._apply_calendar_hover(date_key, True)
+        else:
             self._remove_calendar_hover()
 
-        if self._calendar_hover and self._calendar_hover == (item_id, tag_to_apply):
+    def _apply_calendar_hover(self, date_key: DateKey, is_valid: bool) -> None:
+        if not is_valid:
+            self._remove_calendar_hover()
             return
 
-        current_tags = set(self.calendar_tree.item(item_id, "tags") or ())
-        current_tags.discard("hover_valid")
-        current_tags.discard("hover_invalid")
-        current_tags.add(tag_to_apply)
-        self.calendar_tree.item(item_id, tags=tuple(current_tags))
-        self._calendar_hover = (item_id, tag_to_apply)
+        if self._calendar_hover == date_key:
+            return
+
+        self._remove_calendar_hover()
+
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        hover_color = DAY_CELL_HOVER_VALID if is_valid else DAY_CELL_HOVER_INVALID
+        border_color = "#1e90ff" if is_valid else FAIL_COLOR
+
+        day_cell.frame.configure(
+            bg=hover_color,
+            highlightbackground=border_color,
+            highlightcolor=border_color,
+        )
+        day_cell.header_label.configure(bg=hover_color)
+
+        self._calendar_hover = date_key
 
     def _remove_calendar_hover(self) -> None:
-        if not self._calendar_hover:
+        if self._calendar_hover is None:
             return
 
-        item_id, tag_name = self._calendar_hover
-        if not self.calendar_tree.exists(item_id):
-            self._calendar_hover = None
-            return
-        current_tags = set(self.calendar_tree.item(item_id, "tags") or ())
-        if tag_name in current_tags:
-            current_tags.remove(tag_name)
-            self.calendar_tree.item(item_id, tags=tuple(current_tags))
+        date_key = self._calendar_hover
+        day_cell = self._day_cells.get(date_key)
+        if day_cell:
+            day_cell.frame.configure(
+                bg=day_cell.default_bg,
+                highlightbackground=ACCENT_COLOR,
+                highlightcolor=ACCENT_COLOR,
+            )
+            day_cell.header_label.configure(bg=day_cell.default_bg)
+
         self._calendar_hover = None
 
     def _end_drag(self) -> None:
@@ -813,32 +882,38 @@ class YBSApp:
         self._update_day_cell_display(date_key)
 
     def _update_day_cell_display(self, date_key: DateKey) -> None:
-        target = self._calendar_cells.get(date_key)
-        if not target:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
             return
 
-        item_id, column_name = target
-        _, _, day = date_key
         assignments = self._calendar_assignments.get(date_key, [])
-        display_text = self._format_day_cell(day, assignments)
-        self.calendar_tree.set(item_id, column_name, display_text)
+        orders_list = day_cell.orders_list
+        orders_list.delete(0, tk.END)
+        for assignment in assignments:
+            orders_list.insert(tk.END, self._format_assignment_label(assignment))
 
-    def _format_day_cell(self, day: int, assignments: List[Tuple[str, str]]) -> str:
-        if not assignments:
-            return str(day)
+        try:
+            day_value = int(date_key[2])
+        except (TypeError, ValueError):
+            day_text = str(date_key[2])
+        else:
+            if assignments:
+                day_text = f"{day_value} ({len(assignments)})"
+            else:
+                day_text = str(day_value)
 
-        labels: List[str] = []
-        for order_number, company in assignments:
-            label = order_number.strip()
-            if not label and company:
-                label = company.strip()
-            if label:
-                labels.append(label)
+        day_cell.header_label.configure(text=day_text)
 
-        if not labels:
-            return str(day)
-
-        return f"{day} ({', '.join(labels)})"
+    def _format_assignment_label(self, assignment: Tuple[str, str]) -> str:
+        order_number = assignment[0].strip()
+        company = assignment[1].strip()
+        if order_number and company:
+            return f"{order_number} - {company}"
+        if order_number:
+            return order_number
+        if company:
+            return company
+        return "Unnamed order"
 
     def _format_date_label(self, date_key: DateKey) -> str:
         try:
