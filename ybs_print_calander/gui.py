@@ -412,6 +412,14 @@ class YBSApp:
 
         return "break" if event is not None else None
 
+    def _invoke_text_widget_undo(self, event: tk.Event) -> None:
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Text):
+            try:
+                widget.edit_undo()
+            except tk.TclError:
+                pass
+
     def _on_close(self) -> None:
         if self._state_save_after_id is not None:
             try:
@@ -756,8 +764,17 @@ class YBSApp:
                     bd=0,
                     undo=True,
                     autoseparators=True,
+                    maxundo=-1,
                 )
                 notes_text.grid(row=1, column=0, sticky="nsew", padx=4, pady=(2, 2))
+                notes_text.bind(
+                    "<Control-z>",
+                    lambda event: (self._invoke_text_widget_undo(event), "break")[1],
+                )
+                notes_text.bind(
+                    "<Command-z>",
+                    lambda event: (self._invoke_text_widget_undo(event), "break")[1],
+                )
 
                 orders_list = tk.Listbox(
                     cell_frame,
@@ -921,35 +938,33 @@ class YBSApp:
         if not day_cell:
             return
 
-        text_value = day_cell.notes_text.get("1.0", "end-1c")
-        changed = False
-        snapshot = self._capture_notes_state(date_key)
-        if text_value.strip():
-            if self._calendar_notes.get(date_key) != text_value:
-                self._push_undo_action(
-                    {
-                        "kind": "notes",
-                        "date_key": date_key,
-                        "previous": snapshot.get("previous"),
-                        "had_key": snapshot.get("had_key"),
-                    }
-                )
-                self._calendar_notes[date_key] = text_value
-                changed = True
-        elif date_key in self._calendar_notes:
-            self._push_undo_action(
-                {
-                    "kind": "notes",
-                    "date_key": date_key,
-                    "previous": snapshot.get("previous"),
-                    "had_key": snapshot.get("had_key"),
-                }
-            )
-            self._calendar_notes.pop(date_key, None)
-            changed = True
+        notes_widget = day_cell.notes_text
+        new_text = notes_widget.get("1.0", "end-1c")
+        has_new_text = bool(new_text.strip())
+        existing_text = self._calendar_notes.get(date_key)
 
-        if changed:
-            self._schedule_state_save()
+        if has_new_text:
+            if isinstance(existing_text, str) and existing_text == new_text:
+                return
+        elif existing_text is None:
+            return
+
+        snapshot = self._capture_notes_state(date_key)
+        self._push_undo_action(
+            {
+                "kind": "notes",
+                "date_key": date_key,
+                "previous": snapshot.get("previous"),
+                "had_key": snapshot.get("had_key"),
+            }
+        )
+
+        if has_new_text:
+            self._calendar_notes[date_key] = new_text
+        else:
+            self._calendar_notes.pop(date_key, None)
+
+        self._schedule_state_save()
 
     def _on_day_order_delete(
         self, event: tk.Event | None, date_key: DateKey
