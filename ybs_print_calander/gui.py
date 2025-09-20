@@ -43,6 +43,14 @@ DRAG_THRESHOLD = 5
 DateKey = Tuple[int, int, int]
 
 
+SELECT_ALL_SEQUENCES: tuple[str, str, str, str] = (
+    "<Control-a>",
+    "<Control-A>",
+    "<Command-a>",
+    "<Command-A>",
+)
+
+
 STATE_PATH = Path.home() / ".ybs_print_calander" / "state.json"
 
 
@@ -940,6 +948,10 @@ class YBSApp:
         filter_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         filter_entry.bind("<KeyRelease>", self._apply_order_filter)
 
+        for widget in (username_entry, password_entry, filter_entry):
+            for sequence in SELECT_ALL_SEQUENCES:
+                widget.bind(sequence, self._select_all)
+
         # Treeview and scrollbar
         self.tree = ttk.Treeview(
             table_frame,
@@ -951,6 +963,9 @@ class YBSApp:
         self.tree.heading("company", text="Company", anchor="center")
         self.tree.column("order", anchor="center", width=120, stretch=False)
         self.tree.column("company", anchor="center", width=400)
+
+        for sequence in SELECT_ALL_SEQUENCES:
+            self.tree.bind(sequence, self._select_all)
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -1197,8 +1212,8 @@ class YBSApp:
                     "<Command-Y>",
                     lambda event: (self._invoke_text_widget_redo(event), "break")[1],
                 )
-                notes_text.bind("<Control-a>", self._select_all)
-                notes_text.bind("<Command-a>", self._select_all)
+                for sequence in SELECT_ALL_SEQUENCES:
+                    notes_text.bind(sequence, self._select_all)
 
                 orders_list = tk.Listbox(
                     cell_frame,
@@ -1218,6 +1233,9 @@ class YBSApp:
                     bd=0,
                 )
                 orders_list.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 4))
+
+                for sequence in SELECT_ALL_SEQUENCES:
+                    orders_list.bind(sequence, self._select_all)
 
                 day_cell = DayCell(
                     frame=cell_frame,
