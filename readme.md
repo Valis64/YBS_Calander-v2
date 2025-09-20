@@ -7,11 +7,23 @@ format showing the order number and the associated company name.
 
 ## Features
 
-- **CLI** utility to authenticate and print a formatted order table.
-- **Dark blue themed Tkinter GUI** featuring username/password inputs, a
-  red/green status light for login feedback, and a live order table.
-- Scrapes order numbers and company names from the YBS manage page after a
-  successful login.
+- **Command-line interface (CLI)** for authenticating against the YBS portal and
+  exporting the order list as a formatted table, CSV, or JSON file directly from
+  the terminal.
+- **Menu-driven Tkinter GUI** with File/Edit/Settings/Help menus. Use File ▸
+  Exit to close the window, the Edit menu (or standard Ctrl/Cmd+Z, Ctrl/Cmd+
+  Shift+Z, and Ctrl/Cmd+Y shortcuts) for Undo/Redo, the Settings menu to jump
+  between the Orders & Calendar and Settings tabs, and Help ▸ About to see the
+  current app version.
+- **Settings tab for authentication** that centralizes username and password
+  entry, Login and Refresh controls, a color-coded status light (yellow while a
+  request is in progress, green on success, red on failure), and a status
+  message with the latest refresh timestamp.
+- **Orders & Calendar workspace** featuring a filterable orders table,
+  drag-and-drop scheduling into a monthly calendar, persistent per-day notes,
+  Delete-driven removal of the active day’s assignments, a double-click day
+  details pop-up for reviewing and clearing scheduled orders, and Undo/Redo
+  support for schedule and note edits.
 
 ## Requirements
 
@@ -29,9 +41,30 @@ Launch the GUI directly with:
 python -m ybs_print_calander
 ```
 
-The GUI allows you to enter a username and password, attempt a login, and view
-the retrieved orders in a centered two-column table. A yellow indicator shows an
-in-progress login, which turns green on success or red on failure.
+After launching the window you will land on the **Orders & Calendar** tab. Open
+the **Settings** tab (or choose **Settings ▸ Show Settings**) to authenticate:
+
+1. Enter your YBS credentials, then press **Login**. The circular status light
+   turns yellow while the request is running, switches to green on success, and
+   red on failure. The adjacent status text explains the outcome and the “Last
+   updated” timestamp records when orders were most recently downloaded. The
+   **Refresh** button remains disabled until a login succeeds, then lets you
+   re-fetch orders later without re-entering credentials.
+2. Return to **Orders & Calendar** (via the tab header or **Settings ▸ Show
+   Orders & Calendar**) to work with the data. The upper filter box narrows the
+   orders table in real time. Drag one or more highlighted orders onto a day to
+   schedule them, type notes directly into a day’s text area, and press
+   **Previous/Today/Next** to navigate between months. Double-click a day cell,
+   its notes field, or a scheduled order to open the day details pop-up where
+   you can remove selected orders, clear the entire day, or close the dialog.
+   Use the **Delete** key to clear the active day (when its header is focused)
+   or to remove selected assignments from a day’s order list. Undo and Redo are
+   always available through the Edit menu or the standard keyboard shortcuts.
+3. The window title displays the semantic version (for example,
+   `YBS Print Calander v0.1.0`). Selecting **Help ▸ About** shows the same
+   version in an information dialog and echoes it in the Settings tab status
+   message so you can confirm which build is running. Use **File ▸ Exit** to
+   quit when you are done.
 
 ## Using the CLI
 
