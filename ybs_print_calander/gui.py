@@ -83,7 +83,9 @@ class YBSApp:
 
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
+        self._order_filter_var = tk.StringVar()
         self.month_label_var = tk.StringVar(value=today.strftime("%B %Y"))
+        self._all_orders: list[OrderRecord] = []
 
         self._configure_style()
         self._build_layout()
@@ -324,6 +326,13 @@ class YBSApp:
         )
         table_frame.configure(labelanchor="n")
 
+        filter_label = ttk.Label(table_frame, text="Filter", style="Dark.TLabel")
+        filter_label.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
+
+        filter_entry = ttk.Entry(table_frame, textvariable=self._order_filter_var)
+        filter_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        filter_entry.bind("<KeyRelease>", self._apply_order_filter)
+
         # Treeview and scrollbar
         self.tree = ttk.Treeview(
             table_frame,
@@ -339,15 +348,15 @@ class YBSApp:
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
 
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.grid(row=2, column=0, sticky="nsew")
+        scrollbar.grid(row=2, column=1, sticky="ns")
 
         self.tree.bind("<ButtonPress-1>", self._on_order_press)
         self.tree.bind("<B1-Motion>", self._on_order_drag)
         self.tree.bind("<ButtonRelease-1>", self._on_order_release)
 
         table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+        table_frame.rowconfigure(2, weight=1)
 
         content_paned.add(table_frame, weight=3)
 
@@ -1252,10 +1261,23 @@ class YBSApp:
                 self.password_var.set("")
 
     def _populate_orders(self, orders: Iterable[OrderRecord]) -> None:
+        self._all_orders = list(orders)
+        self._apply_order_filter()
+
+    def _apply_order_filter(self, event: object | None = None) -> None:
+        filter_text = self._order_filter_var.get().strip().lower()
+
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for order in orders:
-            self.tree.insert("", tk.END, values=(order.order_number, order.company))
+
+        for order in self._all_orders:
+            order_number = str(getattr(order, "order_number", ""))
+            company = str(getattr(order, "company", ""))
+            if filter_text and not (
+                filter_text in order_number.lower() or filter_text in company.lower()
+            ):
+                continue
+            self.tree.insert("", tk.END, values=(order_number, company))
 
 
 def launch_app() -> None:
