@@ -1179,7 +1179,10 @@ class YBSApp:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(2, weight=1)
 
-        content_paned.add(table_frame, weight=3)
+        # Allocate roughly one fifth of the horizontal space to the orders table
+        # so it is about twenty-five percent narrower than before, leaving more
+        # room for the calendar view.
+        content_paned.add(table_frame, weight=1)
 
         calendar_frame = ttk.LabelFrame(
             content_paned,
@@ -1236,7 +1239,9 @@ class YBSApp:
 
         self._render_calendar()
 
-        content_paned.add(calendar_frame, weight=2)
+        content_paned.add(calendar_frame, weight=4)
+
+        self._set_panedwindow_ratio(content_paned, 0, 0.2)
 
     def _focus_main_tab(self) -> None:
         notebook = getattr(self, "notebook", None)
@@ -1255,6 +1260,33 @@ class YBSApp:
                 tree_widget.focus_set()
             except tk.TclError:
                 pass
+
+    def _set_panedwindow_ratio(
+        self, paned: ttk.Panedwindow, sash_index: int, fraction: float
+    ) -> None:
+        """Set the horizontal position of a paned window sash."""
+
+        clamped_fraction = max(0.0, min(1.0, fraction))
+
+        def adjust() -> None:
+            try:
+                paned.update_idletasks()
+                total_width = paned.winfo_width()
+            except tk.TclError:
+                return
+
+            if total_width <= 0:
+                self.root.after(50, adjust)
+                return
+
+            target_x = int(total_width * clamped_fraction)
+
+            try:
+                paned.sash_place(sash_index, target_x, 0)
+            except tk.TclError:
+                return
+
+        self.root.after_idle(adjust)
 
     def _focus_settings_tab(self) -> None:
         notebook = getattr(self, "notebook", None)
