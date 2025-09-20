@@ -83,6 +83,7 @@ class YBSApp:
 
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
+        self.last_refresh_var = tk.StringVar(value="")
         self._order_filter_var = tk.StringVar()
         self.month_label_var = tk.StringVar(value=today.strftime("%B %Y"))
         self._all_orders: list[OrderRecord] = []
@@ -314,6 +315,16 @@ class YBSApp:
 
         self.status_message = ttk.Label(login_frame, text="", style="Dark.TLabel")
         self.status_message.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(10, 0))
+
+        self.last_refresh_label = ttk.Label(
+            login_frame,
+            textvariable=self.last_refresh_var,
+            style="Dark.TLabel",
+            font=("TkDefaultFont", 8),
+        )
+        self.last_refresh_label.grid(
+            row=3, column=0, columnspan=3, sticky=tk.W, pady=(2, 0)
+        )
 
         content_paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL, style="Dark.TPanedwindow")
         content_paned.pack(fill=tk.BOTH, expand=True)
@@ -1188,6 +1199,25 @@ class YBSApp:
         self.status_canvas.itemconfigure(self.status_light, fill=color)
         self.status_message.config(text=message)
 
+    def _update_last_refresh(self, success: bool) -> None:
+        if success:
+            timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.last_refresh_var.set(f"Last updated: {timestamp}")
+            return
+
+        current_value = self.last_refresh_var.get().strip()
+        if current_value:
+            base_value = current_value.split(" (stale)", 1)[0]
+            self.last_refresh_var.set(f"{base_value} (stale)")
+        else:
+            self.last_refresh_var.set("")
+
+    def _format_status_with_last_refresh(self, message: str) -> str:
+        last_refresh_text = self.last_refresh_var.get().strip()
+        if message and last_refresh_text:
+            return f"{message} ({last_refresh_text})"
+        return message
+
     def _perform_login(self, username: str, password: str) -> None:
         try:
             self.client.login(username, password)
@@ -1244,17 +1274,22 @@ class YBSApp:
     def _handle_login_result(
         self, success: bool, message: str, orders: List[OrderRecord], operation: str = "login"
     ) -> None:
-        color = SUCCESS_COLOR if success else FAIL_COLOR
-        self._set_status(color, message)
-        self.login_button.config(state=tk.NORMAL)
-
         operation_key = operation.lower() if isinstance(operation, str) else "login"
+
+        self._update_last_refresh(success)
+
+        color = SUCCESS_COLOR if success else FAIL_COLOR
+        status_message = self._format_status_with_last_refresh(message)
+        self._set_status(color, status_message)
+        self.login_button.config(state=tk.NORMAL)
 
         if success:
             self.refresh_button.config(state=tk.NORMAL)
             self._populate_orders(orders)
             if operation_key == "login" and not orders:
-                self.status_message.config(text="Login successful, but no orders were found.")
+                empty_message = "Login successful, but no orders were found."
+                formatted_message = self._format_status_with_last_refresh(empty_message)
+                self._set_status(color, formatted_message)
         else:
             self.refresh_button.config(state=tk.DISABLED)
             if operation_key == "login":
