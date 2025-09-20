@@ -90,6 +90,7 @@ class YBSApp:
         self._active_day_header: DateKey | None = None
         self._drag_data: dict[str, object] = {}
         self._tree_selection_anchor: str | None = None
+        self._day_selection_anchor: Dict[DateKey, int] = {}
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_save_after_id: str | None = None
@@ -918,6 +919,30 @@ class YBSApp:
                 orders_list.bind(
                     "<ButtonRelease-1>",
                     lambda event, key=date_key: self._on_day_order_release(event, key),
+                )
+                orders_list.bind(
+                    "<KeyPress-Up>",
+                    lambda event, key=date_key: self._on_day_order_key_navigate(
+                        event, key, -1
+                    ),
+                )
+                orders_list.bind(
+                    "<KeyPress-Left>",
+                    lambda event, key=date_key: self._on_day_order_key_navigate(
+                        event, key, -1
+                    ),
+                )
+                orders_list.bind(
+                    "<KeyPress-Down>",
+                    lambda event, key=date_key: self._on_day_order_key_navigate(
+                        event, key, 1
+                    ),
+                )
+                orders_list.bind(
+                    "<KeyPress-Right>",
+                    lambda event, key=date_key: self._on_day_order_key_navigate(
+                        event, key, 1
+                    ),
                 )
 
                 self._update_day_cell_display(date_key)
@@ -1906,8 +1931,17 @@ class YBSApp:
 
         orders_list = day_cell.orders_list
         assignments = self._calendar_assignments.get(date_key, [])
+        try:
+            normalized_date_key: DateKey = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            normalized_date_key = date_key
         if not assignments:
             orders_list.selection_clear(0, tk.END)
+            self._day_selection_anchor.pop(normalized_date_key, None)
             self._drag_data.update(
                 {
                     "items": (),
@@ -1952,10 +1986,10 @@ class YBSApp:
             return "break"
 
         if shift_pressed:
-            try:
-                anchor = int(orders_list.index(tk.ANCHOR))
-            except (tk.TclError, ValueError):
+            anchor = self._day_selection_anchor.get(normalized_date_key)
+            if not isinstance(anchor, int) or not (0 <= anchor < len(assignments)):
                 anchor = index
+                self._day_selection_anchor[normalized_date_key] = anchor
             start = min(anchor, index)
             end = max(anchor, index)
             orders_list.selection_clear(0, tk.END)
@@ -1973,6 +2007,7 @@ class YBSApp:
                 orders_list.selection_clear(0, tk.END)
                 orders_list.selection_set(index)
             orders_list.selection_anchor(index)
+            self._day_selection_anchor[normalized_date_key] = index
 
         orders_list.activate(index)
 
@@ -1990,15 +2025,6 @@ class YBSApp:
                 normalized_assignments.append(
                     self._normalize_assignment(assignments[idx])
                 )
-
-        try:
-            normalized_date_key = (
-                int(date_key[0]),
-                int(date_key[1]),
-                int(date_key[2]),
-            )
-        except (TypeError, ValueError):
-            normalized_date_key = date_key
 
         assignments_tuple = tuple(normalized_assignments)
 
@@ -2020,6 +2046,104 @@ class YBSApp:
                 "active_index": index,
             }
         )
+
+        return "break"
+
+    def _on_day_order_key_navigate(
+        self, event: tk.Event, date_key: DateKey, direction: int
+    ) -> str | None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return "break"
+
+        orders_list = day_cell.orders_list
+        try:
+            size = int(orders_list.size())
+        except (tk.TclError, ValueError):
+            return "break"
+
+        try:
+            normalized_date_key: DateKey = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            normalized_date_key = date_key
+
+        if size <= 0:
+            self._day_selection_anchor.pop(normalized_date_key, None)
+            return "break"
+
+        try:
+            active_index = int(orders_list.index(tk.ACTIVE))
+        except (tk.TclError, ValueError):
+            active_index = None
+
+        if active_index is None or not (0 <= active_index < size):
+            selection = orders_list.curselection()
+            if selection:
+                try:
+                    active_index = int(selection[-1])
+                except (TypeError, ValueError):
+                    active_index = None
+
+        if active_index is None or not (0 <= active_index < size):
+            anchor_hint = self._day_selection_anchor.get(normalized_date_key)
+            if isinstance(anchor_hint, int) and 0 <= anchor_hint < size:
+                active_index = anchor_hint
+
+        if active_index is None:
+            active_index = 0 if direction >= 0 else size - 1
+
+        target_index = active_index + direction
+        if target_index < 0:
+            target_index = 0
+        elif target_index >= size:
+            target_index = size - 1
+
+        extend_selection = self._is_shift_pressed(event)
+        ctrl_pressed = self._is_control_pressed(event)
+
+        if extend_selection:
+            anchor = self._day_selection_anchor.get(normalized_date_key)
+            if not isinstance(anchor, int) or not (0 <= anchor < size):
+                anchor = active_index if 0 <= active_index < size else target_index
+                self._day_selection_anchor[normalized_date_key] = anchor
+            start = min(anchor, target_index)
+            end = max(anchor, target_index)
+            orders_list.selection_clear(0, tk.END)
+            for idx in range(start, end + 1):
+                orders_list.selection_set(idx)
+            try:
+                orders_list.selection_anchor(anchor)
+            except tk.TclError:
+                pass
+        elif ctrl_pressed:
+            try:
+                orders_list.activate(target_index)
+                orders_list.see(target_index)
+            except tk.TclError:
+                pass
+            return "break"
+        else:
+            orders_list.selection_clear(0, tk.END)
+            orders_list.selection_set(target_index)
+            try:
+                orders_list.selection_anchor(target_index)
+            except tk.TclError:
+                pass
+            self._day_selection_anchor[normalized_date_key] = target_index
+
+        try:
+            orders_list.activate(target_index)
+        except tk.TclError:
+            pass
+
+        try:
+            orders_list.see(target_index)
+        except tk.TclError:
+            pass
 
         return "break"
 
