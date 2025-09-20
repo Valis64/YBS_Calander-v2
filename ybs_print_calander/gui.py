@@ -1528,6 +1528,7 @@ class YBSApp:
 
     def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
+        self._clear_other_day_selections(None)
         item_id = self.tree.identify_row(event.y)
         ctrl_pressed = self._is_control_pressed(event)
         shift_pressed = self._is_shift_pressed(event)
