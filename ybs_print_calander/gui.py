@@ -1557,6 +1557,9 @@ class YBSApp:
         if anchor not in children:
             anchor = None
 
+        previous_selection = tuple(self.tree.selection())
+        anchor_target: str | None = None
+
         if shift_pressed and children:
             if anchor is None:
                 anchor = item_id
@@ -1570,15 +1573,23 @@ class YBSApp:
                     start_index, end_index = end_index, start_index
                 selection = children[start_index : end_index + 1]
             self.tree.selection_set(selection)
+            if anchor is not None:
+                anchor_target = anchor
         elif ctrl_pressed:
             if item_id in self.tree.selection():
                 self.tree.selection_remove(item_id)
             else:
                 self.tree.selection_add(item_id)
         else:
-            self.tree.selection_set((item_id,))
+            if item_id not in previous_selection:
+                self.tree.selection_set((item_id,))
+                anchor_target = item_id
 
         self.tree.focus(item_id)
+
+        new_selection = tuple(self.tree.selection())
+        if anchor_target is not None and new_selection != previous_selection:
+            self.tree.selection_anchor(anchor_target)
 
         selected_set = set(self.tree.selection())
         ordered_selection = tuple(
