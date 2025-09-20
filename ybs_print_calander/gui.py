@@ -110,6 +110,8 @@ class YBSApp:
         self._active_day_header: DateKey | None = None
         self._drag_data: dict[str, object] = {}
         self._tree_selection_anchor: str | None = None
+        self._tree_selection_snapshot: tuple[str, ...] = ()
+        self._tree_anchor_snapshot: str | None = None
         self._day_selection_anchor: Dict[DateKey, int] = {}
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1175,6 +1177,17 @@ class YBSApp:
         self.tree.bind("<KeyPress-Down>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Left>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Right>", self._on_tree_key_navigate)
+        for sequence in (
+            "<KeyRelease-Control_L>",
+            "<KeyRelease-Control_R>",
+            "<KeyRelease-Shift_L>",
+            "<KeyRelease-Shift_R>",
+            "<KeyRelease-Meta_L>",
+            "<KeyRelease-Meta_R>",
+            "<KeyRelease-Command_L>",
+            "<KeyRelease-Command_R>",
+        ):
+            self.tree.bind(sequence, self._on_tree_modifier_release, add="+")
 
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(2, weight=1)
@@ -2247,11 +2260,104 @@ class YBSApp:
             "active_index": None,
         }
 
+    def _update_tree_selection_snapshot(
+        self, selection: Iterable[str] | None = None, anchor: str | None = None
+    ) -> None:
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            self._tree_selection_snapshot = ()
+            self._tree_anchor_snapshot = None
+            return
+
+        if selection is None:
+            try:
+                selection = tree.selection()
+            except tk.TclError:
+                selection = ()
+
+        normalized = tuple(
+            str(item)
+            for item in selection
+            if isinstance(item, str) and item
+        )
+        self._tree_selection_snapshot = normalized
+
+        if anchor is None:
+            anchor = self._tree_selection_anchor
+        self._tree_anchor_snapshot = anchor if isinstance(anchor, str) else None
+
     def _normalize_tree_anchor(self, children: list[str]) -> str | None:
         anchor = self._tree_selection_anchor
         if anchor and anchor in children:
             return anchor
         self._tree_selection_anchor = None
+        return None
+
+    def _restore_tree_selection_from_snapshot(self) -> None:
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return
+
+        snapshot = getattr(self, "_tree_selection_snapshot", ())
+        if not snapshot:
+            return
+
+        try:
+            current_selection = tuple(tree.selection())
+        except tk.TclError:
+            return
+
+        children = set(tree.get_children(""))
+        preserved = tuple(item for item in snapshot if item in children)
+        if not preserved:
+            return
+
+        if tuple(current_selection) == preserved:
+            return
+
+        try:
+            tree.selection_set(preserved)
+        except tk.TclError:
+            return
+
+        anchor_snapshot = self._tree_anchor_snapshot
+        if anchor_snapshot not in preserved:
+            anchor_snapshot = preserved[-1]
+
+        self._tree_selection_anchor = anchor_snapshot
+        if anchor_snapshot:
+            try:
+                tree.focus(anchor_snapshot)
+            except tk.TclError:
+                pass
+        self._update_tree_selection_snapshot(preserved, anchor_snapshot)
+
+    def _on_tree_modifier_release(self, event: tk.Event) -> str | None:
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return None
+
+        snapshot = getattr(self, "_tree_selection_snapshot", ())
+        if not snapshot:
+            return None
+
+        try:
+            current_selection = tuple(tree.selection())
+        except tk.TclError:
+            current_selection = ()
+
+        children = set(tree.get_children(""))
+        preserved = tuple(item for item in snapshot if item in children)
+        if not preserved:
+            return None
+
+        if tuple(current_selection) == preserved:
+            return None
+
+        def restore() -> None:
+            self._restore_tree_selection_from_snapshot()
+
+        self.root.after_idle(restore)
         return None
 
     def _restore_drag_selection(self) -> None:
@@ -2283,6 +2389,8 @@ class YBSApp:
                 self._tree_selection_anchor = anchor
             elif not preserved:
                 self._tree_selection_anchor = None
+
+            self._update_tree_selection_snapshot(tuple(preserved), self._tree_selection_anchor)
         elif source == "calendar":
             date_key = self._drag_data.get("source_date_key")
             day_cell = self._day_cells.get(date_key) if date_key is not None else None
@@ -2390,6 +2498,8 @@ class YBSApp:
         except tk.TclError:
             pass
 
+        self._update_tree_selection_snapshot(None, self._tree_selection_anchor)
+
         return "break"
 
     def _on_order_press(self, event: tk.Event) -> str | None:
@@ -2403,6 +2513,7 @@ class YBSApp:
             if not ctrl_pressed and not shift_pressed:
                 self.tree.selection_remove(self.tree.selection())
                 self._tree_selection_anchor = None
+                self._update_tree_selection_snapshot((), None)
             self._drag_data.update(
                 {
                     "items": (),
@@ -2489,6 +2600,8 @@ class YBSApp:
 
         assignments_tuple = tuple(normalized_values)
 
+        self._update_tree_selection_snapshot(ordered_selection, self._tree_selection_anchor)
+
         self._drag_data.update(
             {
                 "items": ordered_selection,
@@ -2546,6 +2659,7 @@ class YBSApp:
 
         if items:
             self._restore_drag_selection()
+            self.root.after_idle(self._restore_tree_selection_from_snapshot)
 
         if not items:
             if drag_was_active:
@@ -3216,16 +3330,12 @@ class YBSApp:
                 pass
 
         try:
-            tree.selection_anchor("")
-        except tk.TclError:
-            pass
-
-        try:
             tree.focus("")
         except tk.TclError:
             pass
 
         self._tree_selection_anchor = None
+        self._update_tree_selection_snapshot((), None)
 
     def _end_drag(self) -> None:
         widget = self._drag_data.get("widget")
@@ -3777,6 +3887,7 @@ class YBSApp:
         filter_text = self._order_filter_var.get().strip().lower()
 
         self._tree_selection_anchor = None
+        self._update_tree_selection_snapshot((), None)
 
         for item in self.tree.get_children():
             self.tree.delete(item)
