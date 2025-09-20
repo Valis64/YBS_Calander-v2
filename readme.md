@@ -45,6 +45,14 @@ If you omit either argument, the CLI will prompt interactively. Use
 `--no-prompt` to force non-interactive behaviour (in which case both credentials
 must be supplied on the command line).
 
+The CLI can emit the orders in different formats using `--format`, choosing
+between the default `table`, `csv`, or `json`. Combine this with `--output` to
+write the formatted results to disk instead of standard output, for example:
+
+```bash
+python -m ybs_print_calander.cli --format csv --output orders.csv
+```
+
 ## Notes
 
 - A working internet connection and valid YBS portal credentials are required
