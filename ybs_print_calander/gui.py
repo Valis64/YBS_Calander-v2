@@ -1497,13 +1497,26 @@ class YBSApp:
             return
 
         if not selection:
-            self._set_status(FAIL_COLOR, "Please select an order to remove.")
+            self._set_status(
+                FAIL_COLOR, "Please select at least one order to remove."
+            )
             return
 
-        index = selection[0]
-        if index < 0 or index >= len(assignments):
+        selected_indices: set[int] = set()
+        for item in selection:
+            try:
+                index = int(item)
+            except (TypeError, ValueError):
+                continue
+            selected_indices.add(index)
+
+        valid_indices = sorted(
+            index for index in selected_indices if 0 <= index < len(assignments)
+        )
+
+        if not valid_indices:
             self._set_status(
-                FAIL_COLOR, "Unable to determine which order to remove."
+                FAIL_COLOR, "Unable to determine which orders to remove."
             )
             return
 
@@ -1511,7 +1524,12 @@ class YBSApp:
         self._push_undo_action(
             {"kind": "assignments", "dates": {date_key: snapshot}}
         )
-        removed_assignment = assignments.pop(index)
+
+        removed_assignments: list[Tuple[str, str]] = []
+        for index in reversed(valid_indices):
+            removed_assignments.append(assignments.pop(index))
+        removed_assignments.reverse()
+
         if assignments:
             self._calendar_assignments[date_key] = assignments
         else:
@@ -1521,7 +1539,7 @@ class YBSApp:
         self._update_day_cell_display(date_key)
         self._schedule_state_save()
 
-        message = self._format_removal_message(date_key, removed_assignment)
+        message = self._format_bulk_removal_message(date_key, removed_assignments)
         self._set_status(SUCCESS_COLOR, message)
 
     def _open_day_details(self, date_key: DateKey) -> None:
@@ -3053,6 +3071,20 @@ class YBSApp:
             capitalized = order_phrase[0].upper() + order_phrase[1:]
             return f"{capitalized} remain scheduled for {target_label}."
         return f"Assigned {order_phrase} to {target_label}."
+
+    def _format_bulk_removal_message(
+        self, date_key: DateKey, assignments: Iterable[Tuple[str, str]]
+    ) -> str:
+        assignment_list = list(assignments)
+        if not assignment_list:
+            return ""
+
+        if len(assignment_list) == 1:
+            return self._format_removal_message(date_key, assignment_list[0])
+
+        count = len(assignment_list)
+        date_label = self._format_date_label(date_key)
+        return f"Removed {count} orders from {date_label}."
 
     def _format_removal_message(
         self, date_key: DateKey, assignment: Tuple[str, str]
