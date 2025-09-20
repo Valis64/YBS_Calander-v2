@@ -33,6 +33,10 @@ ASSIGNMENT_HEADER_BACKGROUND = "#2561a8"
 ASSIGNMENT_LIST_BACKGROUND = "#17406d"
 NOTES_TEXT_BACKGROUND = "#0f3460"
 ORDERS_LIST_BACKGROUND = "#0d274a"
+ADJACENT_MONTH_DAY_CELL_BACKGROUND = "#0b1f3d"
+ADJACENT_MONTH_TEXT_COLOR = "#a5b3c8"
+ADJACENT_MONTH_NOTES_BACKGROUND = "#0d2749"
+ADJACENT_MONTH_ORDERS_BACKGROUND = "#0a1c36"
 
 DRAG_THRESHOLD = 5
 
@@ -51,9 +55,15 @@ class DayCell:
     notes_text: tk.Text
     orders_list: tk.Listbox
     default_bg: str
+    header_fg: str = TEXT_COLOR
+    notes_bg: str = NOTES_TEXT_BACKGROUND
+    notes_fg: str = TEXT_COLOR
+    orders_bg: str = ORDERS_LIST_BACKGROUND
+    orders_fg: str = TEXT_COLOR
     border_color: str = ACCENT_COLOR
     border_thickness: int = 1
     is_today: bool = False
+    in_current_month: bool = True
 
 
 class YBSApp:
@@ -705,7 +715,7 @@ class YBSApp:
         for child in self.calendar_grid.winfo_children():
             child.destroy()
 
-        month_structure = calendar.Calendar().monthdayscalendar(year, month)
+        month_structure = calendar.Calendar().monthdatescalendar(year, month)
 
         for column_index in range(7):
             header_label = ttk.Label(
@@ -718,26 +728,34 @@ class YBSApp:
 
         for row_index, week in enumerate(month_structure, start=1):
             self.calendar_grid.rowconfigure(row_index, weight=1, uniform="calendar_rows")
-            for column_index, day in enumerate(week):
-                if day == 0:
-                    placeholder = tk.Frame(
-                        self.calendar_grid,
-                        bg=BACKGROUND_COLOR,
-                        bd=0,
-                        highlightthickness=0,
-                    )
-                    placeholder.grid(
-                        row=row_index, column=column_index, sticky="nsew", padx=2, pady=2
-                    )
-                    continue
-
-                date_key = (year, month, day)
+            for column_index, day_date in enumerate(week):
+                is_current_month = day_date.month == month
+                date_key = (day_date.year, day_date.month, day_date.day)
+                day_number = day_date.day
                 is_today = date_key == today_key
                 border_color = TODAY_BORDER_COLOR if is_today else ACCENT_COLOR
                 border_thickness = 2 if is_today else 1
+                cell_background = (
+                    DAY_CELL_BACKGROUND
+                    if is_current_month
+                    else ADJACENT_MONTH_DAY_CELL_BACKGROUND
+                )
+                header_fg = TEXT_COLOR if is_current_month else ADJACENT_MONTH_TEXT_COLOR
+                notes_bg = (
+                    NOTES_TEXT_BACKGROUND
+                    if is_current_month
+                    else ADJACENT_MONTH_NOTES_BACKGROUND
+                )
+                notes_fg = TEXT_COLOR if is_current_month else ADJACENT_MONTH_TEXT_COLOR
+                orders_bg = (
+                    ORDERS_LIST_BACKGROUND
+                    if is_current_month
+                    else ADJACENT_MONTH_ORDERS_BACKGROUND
+                )
+                orders_fg = TEXT_COLOR if is_current_month else ADJACENT_MONTH_TEXT_COLOR
                 cell_frame = tk.Frame(
                     self.calendar_grid,
-                    bg=DAY_CELL_BACKGROUND,
+                    bg=cell_background,
                     highlightbackground=border_color,
                     highlightcolor=border_color,
                     highlightthickness=border_thickness,
@@ -752,10 +770,10 @@ class YBSApp:
 
                 header_label = tk.Label(
                     cell_frame,
-                    text=str(day),
+                    text=str(day_number),
                     anchor="nw",
-                    bg=DAY_CELL_BACKGROUND,
-                    fg=TEXT_COLOR,
+                    bg=cell_background,
+                    fg=header_fg,
                     font=("TkDefaultFont", 10, "bold"),
                     padx=4,
                     pady=2,
@@ -803,9 +821,9 @@ class YBSApp:
                     cell_frame,
                     height=3,
                     wrap=tk.WORD,
-                    bg=NOTES_TEXT_BACKGROUND,
-                    fg=TEXT_COLOR,
-                    insertbackground=TEXT_COLOR,
+                    bg=notes_bg,
+                    fg=notes_fg,
+                    insertbackground=notes_fg,
                     relief="flat",
                     bd=0,
                     undo=True,
@@ -830,8 +848,8 @@ class YBSApp:
                     selectmode=tk.EXTENDED,
                 )
                 orders_list.configure(
-                    bg=ORDERS_LIST_BACKGROUND,
-                    fg=TEXT_COLOR,
+                    bg=orders_bg,
+                    fg=orders_fg,
                     highlightbackground=ACCENT_COLOR,
                     highlightcolor=ACCENT_COLOR,
                     selectbackground="#1e90ff",
@@ -846,11 +864,17 @@ class YBSApp:
                     header_label=header_label,
                     notes_text=notes_text,
                     orders_list=orders_list,
-                    default_bg=DAY_CELL_BACKGROUND,
+                    default_bg=cell_background,
+                    header_fg=header_fg,
+                    notes_bg=notes_bg,
+                    notes_fg=notes_fg,
+                    orders_bg=orders_bg,
+                    orders_fg=orders_fg,
                 )
                 day_cell.border_color = border_color
                 day_cell.border_thickness = border_thickness
                 day_cell.is_today = is_today
+                day_cell.in_current_month = is_current_month
                 self._day_cells[date_key] = day_cell
 
                 existing_notes = self._calendar_notes.get(date_key, "")
@@ -1005,27 +1029,52 @@ class YBSApp:
         assignments = self._calendar_assignments.get(date_key, [])
         has_assignments = bool(assignments)
 
-        if has_assignments:
+        base_header_fg = getattr(day_cell, "header_fg", TEXT_COLOR)
+        base_orders_fg = getattr(day_cell, "orders_fg", TEXT_COLOR)
+        base_notes_bg = getattr(day_cell, "notes_bg", NOTES_TEXT_BACKGROUND)
+        base_notes_fg = getattr(day_cell, "notes_fg", TEXT_COLOR)
+        base_orders_bg = getattr(day_cell, "orders_bg", ORDERS_LIST_BACKGROUND)
+
+        header_bg: str
+        header_fg: str
+        orders_bg: str
+        orders_fg: str
+
+        if has_assignments and getattr(day_cell, "in_current_month", True):
             header_bg = ASSIGNMENT_HEADER_BACKGROUND
+            header_fg = TEXT_COLOR
             orders_bg = ASSIGNMENT_LIST_BACKGROUND
+            orders_fg = TEXT_COLOR
         else:
-            header_bg = (
-                TODAY_HEADER_BACKGROUND
-                if getattr(day_cell, "is_today", False)
-                else day_cell.default_bg
-            )
-            orders_bg = ORDERS_LIST_BACKGROUND
+            if getattr(day_cell, "is_today", False):
+                header_bg = TODAY_HEADER_BACKGROUND
+                header_fg = TEXT_COLOR
+            else:
+                header_bg = day_cell.default_bg
+                header_fg = base_header_fg
+            orders_bg = base_orders_bg
+            orders_fg = base_orders_fg
 
         if is_active:
             header_bg = ACTIVE_DAY_HEADER_BACKGROUND
+            header_fg = TEXT_COLOR
 
         try:
-            day_cell.header_label.configure(bg=header_bg, fg=TEXT_COLOR)
+            day_cell.header_label.configure(bg=header_bg, fg=header_fg)
         except tk.TclError:
             return
 
         try:
-            day_cell.orders_list.configure(bg=orders_bg, fg=TEXT_COLOR)
+            day_cell.orders_list.configure(bg=orders_bg, fg=orders_fg)
+        except tk.TclError:
+            return
+
+        try:
+            day_cell.notes_text.configure(
+                bg=base_notes_bg,
+                fg=base_notes_fg,
+                insertbackground=base_notes_fg,
+            )
         except tk.TclError:
             return
 
@@ -1137,7 +1186,14 @@ class YBSApp:
                 highlightcolor=border_color,
                 highlightthickness=border_thickness,
             )
-            day_cell.header_label.configure(bg=DAY_CELL_HOVER_VALID, fg=TEXT_COLOR)
+            header_hover_fg = (
+                TEXT_COLOR
+                if getattr(day_cell, "in_current_month", True)
+                else getattr(day_cell, "header_fg", ADJACENT_MONTH_TEXT_COLOR)
+            )
+            day_cell.header_label.configure(
+                bg=DAY_CELL_HOVER_VALID, fg=header_hover_fg
+            )
         except tk.TclError:
             return
 
@@ -2027,7 +2083,12 @@ class YBSApp:
             highlightcolor=border_color,
             highlightthickness=day_cell.border_thickness + 1,
         )
-        day_cell.header_label.configure(bg=hover_color)
+        header_fg = (
+            TEXT_COLOR
+            if getattr(day_cell, "in_current_month", True)
+            else getattr(day_cell, "header_fg", ADJACENT_MONTH_TEXT_COLOR)
+        )
+        day_cell.header_label.configure(bg=hover_color, fg=header_fg)
 
         self._calendar_hover = date_key
 
