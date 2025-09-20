@@ -2144,6 +2144,7 @@ class YBSApp:
                 payload: dict[str, object] = {
                     "date_key": normalized_key,
                     "orders": normalized_orders,
+                    "source_kind": "tree",
                 }
                 self._queue.put(("calendar_drop", True, message, payload))
         else:
@@ -2506,6 +2507,7 @@ class YBSApp:
                 payload: dict[str, object] = {
                     "date_key": normalized_key,
                     "orders": normalized_orders,
+                    "source_kind": "calendar",
                 }
 
                 if normalized_source is not None:
@@ -2714,6 +2716,36 @@ class YBSApp:
             except tk.TclError:
                 continue
 
+    def _clear_tree_selection(self) -> None:
+        """Clear the selection state for the orders tree."""
+
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return
+
+        try:
+            selected_items = tree.selection()
+        except tk.TclError:
+            selected_items = ()
+
+        if selected_items:
+            try:
+                tree.selection_remove(selected_items)
+            except tk.TclError:
+                pass
+
+        try:
+            tree.selection_anchor("")
+        except tk.TclError:
+            pass
+
+        try:
+            tree.focus("")
+        except tk.TclError:
+            pass
+
+        self._tree_selection_anchor = None
+
     def _end_drag(self) -> None:
         widget = self._drag_data.get("widget")
         if widget is not None:
@@ -2753,6 +2785,13 @@ class YBSApp:
         ]
         if not normalized_orders:
             return
+
+        source_kind = payload.get("source_kind")
+        if (
+            source_kind == "tree"
+            or (source_kind is None and "source_date_key" not in payload)
+        ):
+            self._clear_tree_selection()
 
         raw_source_key = payload.get("source_date_key")
         normalized_source: DateKey | None = None
