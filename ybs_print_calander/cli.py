@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from getpass import getpass
 from typing import Iterable, Sequence
@@ -51,8 +52,22 @@ def _format_table(orders: Sequence[OrderRecord]) -> str:
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="YBS Print Calander CLI")
-    parser.add_argument("--username", "-u", help="Username used for the YBS portal")
-    parser.add_argument("--password", "-p", help="Password used for the YBS portal")
+    parser.add_argument(
+        "--username",
+        "-u",
+        help=(
+            "Username used for the YBS portal. Can also be provided via the "
+            "YBS_USERNAME environment variable"
+        ),
+    )
+    parser.add_argument(
+        "--password",
+        "-p",
+        help=(
+            "Password used for the YBS portal. Can also be provided via the "
+            "YBS_PASSWORD environment variable"
+        ),
+    )
     parser.add_argument(
         "--no-prompt",
         action="store_true",
@@ -61,11 +76,19 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    if args.no_prompt and (args.username is None or args.password is None):
-        parser.error("--no-prompt requires both --username and --password to be provided")
+    username = args.username or os.environ.get("YBS_USERNAME")
+    password = args.password or os.environ.get("YBS_PASSWORD")
 
-    username = _prompt_for_missing(args.username, "Username: ")
-    password = _prompt_for_missing(args.password, "Password: ", secret=True)
+    if args.no_prompt and (not username or not password):
+        parser.error(
+            "--no-prompt requires both --username and --password to be provided or "
+            "for YBS_USERNAME/YBS_PASSWORD to be set"
+        )
+
+    if not username and not args.no_prompt:
+        username = _prompt_for_missing(username, "Username: ")
+    if not password and not args.no_prompt:
+        password = _prompt_for_missing(password, "Password: ", secret=True)
 
     client = YBSClient()
 
