@@ -2320,7 +2320,7 @@ class YBSApp:
         except tk.TclError:
             return
 
-        anchor_snapshot = self._tree_anchor_snapshot
+        anchor_snapshot = getattr(self, "_tree_anchor_snapshot", None)
         if anchor_snapshot not in preserved:
             anchor_snapshot = preserved[-1]
 
@@ -2341,24 +2341,20 @@ class YBSApp:
         if not snapshot:
             return None
 
-        try:
-            current_selection = tuple(tree.selection())
-        except tk.TclError:
-            current_selection = ()
-
-        children = set(tree.get_children(""))
-        preserved = tuple(item for item in snapshot if item in children)
-        if not preserved:
-            return None
-
-        if tuple(current_selection) == preserved:
-            return None
-
         def restore() -> None:
             self._restore_tree_selection_from_snapshot()
 
-        self.root.after_idle(restore)
-        return None
+        root = getattr(self, "root", None)
+        if root is None:
+            restore()
+            return "break"
+
+        try:
+            root.after_idle(restore)
+        except tk.TclError:
+            restore()
+
+        return "break"
 
     def _restore_drag_selection(self) -> None:
         snapshot = self._drag_data.get("selection_snapshot")
