@@ -12,7 +12,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
 
@@ -89,6 +89,7 @@ class YBSApp:
         self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
         self._drag_data: dict[str, object] = {}
+        self._tree_anchor: str | None = None
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_save_after_id: str | None = None
@@ -631,6 +632,7 @@ class YBSApp:
         self.tree.bind("<ButtonPress-1>", self._on_order_press)
         self.tree.bind("<B1-Motion>", self._on_order_drag)
         self.tree.bind("<ButtonRelease-1>", self._on_order_release)
+        self.tree.bind("<KeyPress>", self._on_tree_keypress)
 
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(2, weight=1)
@@ -1526,6 +1528,68 @@ class YBSApp:
             "source_assignments": (),
         }
 
+    def _ensure_tree_anchor(self, children: Sequence[str]) -> str | None:
+        anchor = self._tree_anchor
+        if anchor in children:
+            return anchor
+        if not children:
+            self._tree_anchor = None
+            return None
+        anchor = children[0]
+        self._tree_anchor = anchor
+        return anchor
+
+    def _on_tree_keypress(self, event: tk.Event) -> str | None:
+        keysym = str(getattr(event, "keysym", ""))
+        direction_map = {"Up": -1, "Down": 1}
+        if keysym not in direction_map:
+            return None
+
+        children = list(self.tree.get_children(""))
+        if not children:
+            self._tree_anchor = None
+            return "break"
+
+        focus_item = self.tree.focus()
+        if focus_item not in children:
+            anchor = self._ensure_tree_anchor(children)
+            focus_item = anchor if anchor is not None else children[0]
+
+        try:
+            current_index = children.index(focus_item)
+        except ValueError:
+            current_index = 0
+
+        step = direction_map[keysym]
+        new_index = max(0, min(current_index + step, len(children) - 1))
+        if new_index == current_index:
+            return "break"
+
+        shift_pressed = self._is_shift_pressed(event)
+        new_item = children[new_index]
+
+        if shift_pressed:
+            anchor = self._ensure_tree_anchor(children)
+            if anchor is None:
+                anchor = new_item
+                self._tree_anchor = anchor
+            try:
+                start_index = children.index(anchor)
+            except ValueError:
+                start_index = new_index
+            if start_index <= new_index:
+                selection = children[start_index : new_index + 1]
+            else:
+                selection = children[new_index : start_index + 1]
+            self.tree.selection_set(selection)
+        else:
+            self.tree.selection_set((new_item,))
+            self._tree_anchor = new_item
+
+        self.tree.focus(new_item)
+        self.tree.see(new_item)
+        return "break"
+
     def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
         self._clear_other_day_selections(None)
@@ -1553,9 +1617,7 @@ class YBSApp:
             return "break"
 
         children = list(self.tree.get_children(""))
-        anchor = self.tree.focus()
-        if anchor not in children:
-            anchor = None
+        anchor = self._ensure_tree_anchor(children)
 
         if shift_pressed and children:
             if anchor is None:
@@ -1577,6 +1639,7 @@ class YBSApp:
                 self.tree.selection_add(item_id)
         else:
             self.tree.selection_set((item_id,))
+            self._tree_anchor = item_id
 
         self.tree.focus(item_id)
 
@@ -2673,6 +2736,8 @@ class YBSApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
+        self._tree_anchor = None
+
         for order in self._all_orders:
             order_number = str(getattr(order, "order_number", ""))
             company = str(getattr(order, "company", ""))
@@ -2681,6 +2746,14 @@ class YBSApp:
             ):
                 continue
             self.tree.insert("", tk.END, values=(order_number, company))
+
+        children = list(self.tree.get_children(""))
+        anchor = self._ensure_tree_anchor(children)
+        focus_item = self.tree.focus()
+        if anchor is not None and focus_item not in children:
+            self.tree.focus(anchor)
+        if not children:
+            self.tree.focus("")
 
 
 def launch_app() -> None:
