@@ -11,9 +11,10 @@ import threading
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Any, Dict, Iterable, List, Tuple
 
+from . import __version__
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
 
 BACKGROUND_COLOR = "#0b1d3a"
@@ -37,6 +38,16 @@ ADJACENT_MONTH_DAY_CELL_BACKGROUND = "#0b1f3d"
 ADJACENT_MONTH_TEXT_COLOR = "#a5b3c8"
 ADJACENT_MONTH_NOTES_BACKGROUND = "#0d2749"
 ADJACENT_MONTH_ORDERS_BACKGROUND = "#0a1c36"
+
+APP_NAME = "YBS Print Calander"
+APP_TITLE = f"{APP_NAME} v{__version__}"
+ABOUT_TITLE = f"About {APP_NAME}"
+APP_DESCRIPTION = "Manage print orders and assignments."
+ABOUT_MESSAGE = (
+    f"{APP_NAME}\n"
+    f"Version {__version__}\n\n"
+    f"{APP_DESCRIPTION}"
+)
 
 DRAG_THRESHOLD = 5
 
@@ -71,7 +82,7 @@ class YBSApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("YBS Print Calander")
+        self.root.title(APP_TITLE)
         self.root.configure(background=BACKGROUND_COLOR)
         self.root.geometry("720x480")
 
@@ -983,10 +994,17 @@ class YBSApp:
                 pass
 
     def _show_about_message(self) -> None:
-        self._set_status(
-            SUCCESS_COLOR,
-            "YBS Print Calander v2 - Manage print orders and assignments.",
-        )
+        status_message = f"{APP_TITLE} - {APP_DESCRIPTION}"
+        try:
+            messagebox.showinfo(
+                title=ABOUT_TITLE,
+                message=ABOUT_MESSAGE,
+                parent=self.root,
+            )
+        except tk.TclError:
+            pass
+
+        self._set_status(SUCCESS_COLOR, status_message)
 
     def _render_calendar(self) -> None:
         year = self._current_year
