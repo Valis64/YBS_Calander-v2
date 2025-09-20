@@ -6,6 +6,7 @@ import calendar
 import datetime as dt
 import json
 import queue
+import sys
 import threading
 import tkinter as tk
 from dataclasses import dataclass
@@ -146,9 +147,10 @@ class YBSApp:
 
     @classmethod
     def _is_control_pressed(cls, event: tk.Event | None) -> bool:
-        state = int(getattr(event, "state", 0) or 0)
-        control_masks = (0x0004, 0x0008, 0x0010, 0x0040, 0x0080)
-        return any(state & mask for mask in control_masks)
+        control_masks: tuple[int, ...] = (0x0004,)
+        if sys.platform == "darwin":
+            control_masks += (0x0010,)
+        return any(cls._event_state_has_flag(event, mask) for mask in control_masks)
 
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
