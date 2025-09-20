@@ -66,6 +66,125 @@ class DayCell:
     in_current_month: bool = True
 
 
+class DragManager:
+    """Coordinate drag-and-drop gestures while preserving widget selection."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.source_widget: tk.Widget | None = None
+        self.source: str | None = None
+        self.selection: tuple[object, ...] = ()
+        self.values: tuple[Tuple[str, str], ...] = ()
+        self.start_x: int = 0
+        self.start_y: int = 0
+        self.drag_widget: tk.Toplevel | None = None
+        self.dragging: bool = False
+        self.source_date_key: DateKey | None = None
+        self.source_indices: tuple[int, ...] = ()
+        self.source_assignments: tuple[Tuple[str, str], ...] = ()
+
+    def begin(
+        self,
+        widget: tk.Widget | None,
+        *,
+        source: str,
+        selection: Iterable[object],
+        values: Iterable[Tuple[str, str]],
+        start_x: int,
+        start_y: int,
+        source_date_key: DateKey | None = None,
+        source_indices: Iterable[int] | None = None,
+        source_assignments: Iterable[Tuple[str, str]] | None = None,
+    ) -> None:
+        self.source_widget = widget
+        self.source = source
+        self.selection = tuple(selection)
+        self.values = tuple(values)
+        self.start_x = int(start_x)
+        self.start_y = int(start_y)
+        self.drag_widget = None
+        self.dragging = False
+        self.source_date_key = source_date_key
+        if source_indices is not None:
+            self.source_indices = tuple(int(idx) for idx in source_indices)
+        elif source == "calendar":
+            self.source_indices = tuple(
+                int(idx) for idx in self.selection if isinstance(idx, int)
+            )
+        else:
+            self.source_indices = ()
+        if source_assignments is not None:
+            self.source_assignments = tuple(source_assignments)
+        else:
+            self.source_assignments = self.values
+
+    def has_selection(self) -> bool:
+        return bool(self.selection)
+
+    def exceeded_threshold(self, x_root: int, y_root: int, threshold: int) -> bool:
+        if not self.has_selection():
+            return False
+        try:
+            current_x = int(x_root)
+            current_y = int(y_root)
+        except (TypeError, ValueError):
+            return False
+        return (
+            abs(current_x - self.start_x) >= threshold
+            or abs(current_y - self.start_y) >= threshold
+        )
+
+    def restore_selection(self) -> None:
+        widget = self.source_widget
+        if widget is None:
+            return
+        try:
+            if not widget.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        if self.source == "tree" and isinstance(widget, ttk.Treeview):
+            try:
+                widget.selection_set(self.selection)
+                if self.selection:
+                    widget.focus(self.selection[-1])
+            except tk.TclError:
+                return
+        elif self.source == "calendar" and isinstance(widget, tk.Listbox):
+            try:
+                widget.selection_clear(0, tk.END)
+            except tk.TclError:
+                return
+            for index in self.source_indices:
+                try:
+                    widget.selection_set(index)
+                except tk.TclError:
+                    continue
+            if self.source_indices:
+                try:
+                    widget.selection_anchor(self.source_indices[0])
+                    widget.activate(self.source_indices[-1])
+                except tk.TclError:
+                    pass
+
+    def set_drag_widget(self, widget: tk.Toplevel | None) -> None:
+        self.drag_widget = widget
+
+    def get_drag_widget(self) -> tk.Toplevel | None:
+        return self.drag_widget
+
+    def end_drag(self) -> None:
+        widget = self.drag_widget
+        if widget is not None:
+            try:  # pragma: no cover - defensive cleanup
+                widget.destroy()
+            except tk.TclError:
+                pass
+        self.reset()
+
 class YBSApp:
     """Encapsulates the Tkinter application."""
 
@@ -88,7 +207,7 @@ class YBSApp:
         self._calendar_hover: DateKey | None = None
         self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
-        self._drag_data: dict[str, object] = {}
+        self._drag_manager = DragManager()
         self._state_path: Path = STATE_PATH
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_save_after_id: str | None = None
@@ -616,6 +735,7 @@ class YBSApp:
             columns=("order", "company"),
             show="headings",
             style="Dark.Treeview",
+            selectmode="extended",
         )
         self.tree.heading("order", text="Order#", anchor="center")
         self.tree.heading("company", text="Company", anchor="center")
@@ -1080,7 +1200,7 @@ class YBSApp:
 
         if (
             self._day_cell_pointer_hover == date_key
-            and not self._drag_data.get("active")
+            and not self._drag_manager.dragging
             and self._calendar_hover != date_key
             and self._is_pointer_over_day_cell(day_cell)
         ):
@@ -1089,7 +1209,7 @@ class YBSApp:
     def _on_day_cell_pointer_enter(
         self, event: tk.Event | None, date_key: DateKey
     ) -> None:
-        if self._drag_data.get("active"):
+        if self._drag_manager.dragging:
             return
         self._apply_day_cell_pointer_hover(date_key, check_pointer=False)
 
@@ -1119,7 +1239,7 @@ class YBSApp:
         if self._day_cell_pointer_hover == date_key:
             self._day_cell_pointer_hover = None
 
-        if self._calendar_hover == date_key and self._drag_data.get("active"):
+        if self._calendar_hover == date_key and self._drag_manager.dragging:
             return
 
         self._apply_day_cell_base_style(date_key)
@@ -1154,7 +1274,7 @@ class YBSApp:
     def _apply_day_cell_pointer_hover(
         self, date_key: DateKey, *, check_pointer: bool = True
     ) -> None:
-        if self._drag_data.get("active"):
+        if self._drag_manager.dragging:
             return
 
         if self._calendar_hover == date_key:
@@ -1513,18 +1633,7 @@ class YBSApp:
         self._render_calendar()
 
     def _reset_drag_state(self) -> None:
-        self._drag_data = {
-            "items": (),
-            "values": (),
-            "start_x": 0,
-            "start_y": 0,
-            "widget": None,
-            "active": False,
-            "source": None,
-            "source_date_key": None,
-            "source_indices": (),
-            "source_assignments": (),
-        }
+        self._drag_manager.reset()
 
     def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
@@ -1535,19 +1644,16 @@ class YBSApp:
         if not item_id:
             if not ctrl_pressed and not shift_pressed:
                 self.tree.selection_remove(self.tree.selection())
-            self._drag_data.update(
-                {
-                    "items": (),
-                    "values": (),
-                    "start_x": event.x_root,
-                    "start_y": event.y_root,
-                    "widget": None,
-                    "active": False,
-                    "source": "tree",
-                    "source_date_key": None,
-                    "source_indices": (),
-                    "source_assignments": (),
-                }
+            self._drag_manager.begin(
+                self.tree,
+                source="tree",
+                selection=(),
+                values=(),
+                start_x=event.x_root,
+                start_y=event.y_root,
+                source_date_key=None,
+                source_indices=(),
+                source_assignments=(),
             )
             return "break"
 
@@ -1591,52 +1697,49 @@ class YBSApp:
 
         assignments_tuple = tuple(normalized_values)
 
-        self._drag_data.update(
-            {
-                "items": ordered_selection,
-                "values": assignments_tuple,
-                "start_x": event.x_root,
-                "start_y": event.y_root,
-                "widget": None,
-                "active": False,
-                "source": "tree",
-                "source_date_key": None,
-                "source_indices": (),
-                "source_assignments": assignments_tuple,
-            }
+        self._drag_manager.begin(
+            self.tree,
+            source="tree",
+            selection=ordered_selection,
+            values=assignments_tuple,
+            start_x=event.x_root,
+            start_y=event.y_root,
+            source_date_key=None,
+            source_indices=(),
+            source_assignments=assignments_tuple,
         )
 
         return "break"
 
-    def _on_order_drag(self, event: tk.Event) -> None:
-        items = self._drag_data.get("items")
-        if not items:
-            return
+    def _on_order_drag(self, event: tk.Event) -> str | None:
+        if not self._drag_manager.has_selection():
+            return None
 
-        if not self._drag_data.get("active"):
-            start_x = int(self._drag_data.get("start_x", event.x_root))
-            start_y = int(self._drag_data.get("start_y", event.y_root))
-            if (
-                abs(event.x_root - start_x) >= DRAG_THRESHOLD
-                or abs(event.y_root - start_y) >= DRAG_THRESHOLD
-            ):
-                self._begin_drag()
+        self._drag_manager.restore_selection()
 
-        if not self._drag_data.get("active"):
-            return
+        if (
+            not self._drag_manager.dragging
+            and self._drag_manager.exceeded_threshold(
+                event.x_root, event.y_root, DRAG_THRESHOLD
+            )
+        ):
+            self._begin_drag()
+
+        if not self._drag_manager.dragging:
+            return "break"
 
         self._position_drag_window(event.x_root, event.y_root)
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         self._update_calendar_hover(target_info)
+        return "break"
 
-    def _on_order_release(self, event: tk.Event) -> None:
-        items = self._drag_data.get("items")
-        if not items:
-            return
+    def _on_order_release(self, event: tk.Event) -> str | None:
+        if not self._drag_manager.has_selection():
+            return None
 
-        if not self._drag_data.get("active"):
+        if not self._drag_manager.dragging:
             self._end_drag()
-            return
+            return "break"
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
@@ -1653,7 +1756,7 @@ class YBSApp:
                     normalized_key = None
 
         if normalized_key is not None:
-            raw_orders = self._drag_data.get("values", ())
+            raw_orders = self._drag_manager.values
             if not isinstance(raw_orders, (tuple, list)) or not raw_orders:
                 self._queue.put(
                     (
@@ -1689,6 +1792,7 @@ class YBSApp:
             )
 
         self._end_drag()
+        return "break"
 
     def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> str | None:
         self._end_drag()
@@ -1699,21 +1803,28 @@ class YBSApp:
 
         orders_list = day_cell.orders_list
         assignments = self._calendar_assignments.get(date_key, [])
+
+        try:
+            normalized_date_key = (
+                int(date_key[0]),
+                int(date_key[1]),
+                int(date_key[2]),
+            )
+        except (TypeError, ValueError):
+            normalized_date_key = date_key
+
         if not assignments:
             orders_list.selection_clear(0, tk.END)
-            self._drag_data.update(
-                {
-                    "items": (),
-                    "values": (),
-                    "start_x": event.x_root,
-                    "start_y": event.y_root,
-                    "widget": None,
-                    "active": False,
-                    "source": "calendar",
-                    "source_date_key": date_key,
-                    "source_indices": (),
-                    "source_assignments": (),
-                }
+            self._drag_manager.begin(
+                orders_list,
+                source="calendar",
+                selection=(),
+                values=(),
+                start_x=event.x_root,
+                start_y=event.y_root,
+                source_date_key=normalized_date_key,
+                source_indices=(),
+                source_assignments=(),
             )
             return "break"
 
@@ -1774,37 +1885,25 @@ class YBSApp:
                     self._normalize_assignment(assignments[idx])
                 )
 
-        try:
-            normalized_date_key = (
-                int(date_key[0]),
-                int(date_key[1]),
-                int(date_key[2]),
-            )
-        except (TypeError, ValueError):
-            normalized_date_key = date_key
-
         assignments_tuple = tuple(normalized_assignments)
 
-        self._drag_data.update(
-            {
-                "items": selected_indices,
-                "values": assignments_tuple,
-                "start_x": event.x_root,
-                "start_y": event.y_root,
-                "widget": None,
-                "active": False,
-                "source": "calendar",
-                "source_date_key": normalized_date_key,
-                "source_indices": selected_indices,
-                "source_assignments": assignments_tuple,
-            }
+        self._drag_manager.begin(
+            orders_list,
+            source="calendar",
+            selection=selected_indices,
+            values=assignments_tuple,
+            start_x=event.x_root,
+            start_y=event.y_root,
+            source_date_key=normalized_date_key,
+            source_indices=selected_indices,
+            source_assignments=assignments_tuple,
         )
 
         return "break"
 
-    def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> None:
-        if self._drag_data.get("source") != "calendar":
-            return
+    def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> str | None:
+        if self._drag_manager.source != "calendar":
+            return None
 
         try:
             normalized_date_key = (
@@ -1815,33 +1914,34 @@ class YBSApp:
         except (TypeError, ValueError):
             normalized_date_key = date_key
 
-        if self._drag_data.get("source_date_key") != normalized_date_key:
-            return
+        if self._drag_manager.source_date_key != normalized_date_key:
+            return None
 
-        items = self._drag_data.get("items")
-        if not items:
-            return
+        if not self._drag_manager.has_selection():
+            return None
 
-        if not self._drag_data.get("active"):
-            start_x = int(self._drag_data.get("start_x", event.x_root))
-            start_y = int(self._drag_data.get("start_y", event.y_root))
-            if (
-                abs(event.x_root - start_x) >= DRAG_THRESHOLD
-                or abs(event.y_root - start_y) >= DRAG_THRESHOLD
-            ):
-                self._begin_drag()
+        self._drag_manager.restore_selection()
 
-        if not self._drag_data.get("active"):
-            return
+        if (
+            not self._drag_manager.dragging
+            and self._drag_manager.exceeded_threshold(
+                event.x_root, event.y_root, DRAG_THRESHOLD
+            )
+        ):
+            self._begin_drag()
+
+        if not self._drag_manager.dragging:
+            return "break"
 
         self._position_drag_window(event.x_root, event.y_root)
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         self._update_calendar_hover(target_info)
+        return "break"
 
-    def _on_day_order_release(self, event: tk.Event, date_key: DateKey) -> None:
-        if self._drag_data.get("source") != "calendar":
+    def _on_day_order_release(self, event: tk.Event, date_key: DateKey) -> str | None:
+        if self._drag_manager.source != "calendar":
             self._end_drag()
-            return
+            return "break"
 
         try:
             normalized_date_key = (
@@ -1852,18 +1952,17 @@ class YBSApp:
         except (TypeError, ValueError):
             normalized_date_key = date_key
 
-        if self._drag_data.get("source_date_key") != normalized_date_key:
+        if self._drag_manager.source_date_key != normalized_date_key:
             self._end_drag()
-            return
+            return "break"
 
-        items = self._drag_data.get("items")
-        if not items:
+        if not self._drag_manager.has_selection():
             self._end_drag()
-            return
+            return "break"
 
-        if not self._drag_data.get("active"):
+        if not self._drag_manager.dragging:
             self._end_drag()
-            return
+            return "break"
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
@@ -1880,7 +1979,7 @@ class YBSApp:
                     normalized_key = None
 
         if normalized_key is not None:
-            raw_orders = self._drag_data.get("values", ())
+            raw_orders = self._drag_manager.values
             if not isinstance(raw_orders, (tuple, list)) or not raw_orders:
                 self._queue.put(
                     (
@@ -1896,7 +1995,7 @@ class YBSApp:
                     for order in raw_orders
                 )
 
-                raw_source_key = self._drag_data.get("source_date_key")
+                raw_source_key = self._drag_manager.source_date_key
                 normalized_source: DateKey | None = None
                 if isinstance(raw_source_key, (tuple, list)) and len(raw_source_key) == 3:
                     try:
@@ -1930,16 +2029,13 @@ class YBSApp:
                 if normalized_source is not None:
                     payload["source_date_key"] = normalized_source
 
-                    source_indices = self._drag_data.get("source_indices", ())
-                    if isinstance(source_indices, (tuple, list)):
+                    if self._drag_manager.source_indices:
                         payload["source_indices"] = tuple(
-                            int(index) for index in source_indices
+                            int(index) for index in self._drag_manager.source_indices
                         )
 
-                    source_assignments = self._drag_data.get(
-                        "source_assignments", ()
-                    )
-                    if isinstance(source_assignments, (tuple, list)):
+                    source_assignments = self._drag_manager.source_assignments
+                    if source_assignments:
                         payload["source_orders"] = tuple(
                             self._normalize_assignment(order)
                             for order in source_assignments
@@ -1957,10 +2053,11 @@ class YBSApp:
             )
 
         self._end_drag()
+        return "break"
 
     def _begin_drag(self) -> None:
-        items = self._drag_data.get("items")
-        values = self._drag_data.get("values", ())
+        items = self._drag_manager.selection
+        values = self._drag_manager.values
         if not items or not isinstance(values, (tuple, list)):
             return
 
@@ -1997,16 +2094,16 @@ class YBSApp:
         )
         label.pack()
 
-        self._drag_data["widget"] = drag_window
-        self._drag_data["values"] = tuple(normalized_orders)
-        self._drag_data["active"] = True
+        self._drag_manager.set_drag_widget(drag_window)
+        self._drag_manager.values = tuple(normalized_orders)
+        self._drag_manager.dragging = True
 
-        start_x = int(self._drag_data.get("start_x", 0))
-        start_y = int(self._drag_data.get("start_y", 0))
+        start_x = int(getattr(self._drag_manager, "start_x", 0))
+        start_y = int(getattr(self._drag_manager, "start_y", 0))
         self._position_drag_window(start_x, start_y)
 
     def _position_drag_window(self, x_root: int, y_root: int) -> None:
-        widget = self._drag_data.get("widget")
+        widget = self._drag_manager.get_drag_widget()
         if widget is None:
             return
         widget.geometry(f"+{x_root + 16}+{y_root + 16}")
@@ -2101,14 +2198,8 @@ class YBSApp:
         self._calendar_hover = None
 
     def _end_drag(self) -> None:
-        widget = self._drag_data.get("widget")
-        if widget is not None:
-            try:  # pragma: no cover - defensive cleanup
-                widget.destroy()
-            except tk.TclError:
-                pass
+        self._drag_manager.end_drag()
         self._remove_calendar_hover()
-        self._reset_drag_state()
 
     def _handle_calendar_drop(self, success: bool, message: str, payload: object | None) -> None:
         color = SUCCESS_COLOR if success else FAIL_COLOR
