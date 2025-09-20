@@ -26,6 +26,8 @@ DAY_CELL_HOVER_VALID = "#25497a"
 DAY_CELL_HOVER_INVALID = "#5a1f1f"
 TODAY_BORDER_COLOR = "#f6c343"
 TODAY_HEADER_BACKGROUND = "#1d4e89"
+ACTIVE_DAY_BORDER_COLOR = "#1e90ff"
+ACTIVE_DAY_HEADER_BACKGROUND = "#337ab7"
 ASSIGNMENT_HEADER_BACKGROUND = "#2561a8"
 ASSIGNMENT_LIST_BACKGROUND = "#17406d"
 NOTES_TEXT_BACKGROUND = "#0f3460"
@@ -663,12 +665,11 @@ class YBSApp:
         self.month_label_var.set(first_of_month.strftime("%B %Y"))
 
         self._remove_calendar_hover()
+        previous_active = self._active_day_header
 
         for date_key, day_cell in list(self._day_cells.items()):
             self._save_day_notes(date_key)
             day_cell.frame.destroy()
-            if self._active_day_header == date_key:
-                self._active_day_header = None
 
         self._day_cells.clear()
 
@@ -847,9 +848,33 @@ class YBSApp:
                 self._update_day_cell_display(date_key)
 
         self._calendar_hover = None
+        self._set_active_day_header(previous_active)
+
+    def _refresh_day_header_selection(
+        self, previous_active: DateKey | None = None
+    ) -> None:
+        current_active = self._active_day_header
+
+        if previous_active and previous_active != current_active:
+            self._apply_day_cell_base_style(previous_active)
+
+        if current_active is None:
+            return
+
+        if current_active not in self._day_cells:
+            self._active_day_header = None
+            return
+
+        self._apply_day_cell_base_style(current_active)
 
     def _set_active_day_header(self, date_key: DateKey | None) -> None:
+        previous_active = self._active_day_header
+        if previous_active == date_key:
+            self._refresh_day_header_selection()
+            return
+
         self._active_day_header = date_key
+        self._refresh_day_header_selection(previous_active)
 
     def _on_day_header_click(self, event: tk.Event, date_key: DateKey) -> None:
         self._set_active_day_header(date_key)
@@ -907,14 +932,29 @@ class YBSApp:
         if not day_cell:
             return
 
+        try:
+            if not day_cell.frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
         border_color = getattr(day_cell, "border_color", ACCENT_COLOR)
         border_thickness = getattr(day_cell, "border_thickness", 1)
-        day_cell.frame.configure(
-            bg=day_cell.default_bg,
-            highlightbackground=border_color,
-            highlightcolor=border_color,
-            highlightthickness=border_thickness,
-        )
+        is_active = self._active_day_header == date_key
+
+        if is_active:
+            border_color = ACTIVE_DAY_BORDER_COLOR
+            border_thickness = max(border_thickness, 3)
+
+        try:
+            day_cell.frame.configure(
+                bg=day_cell.default_bg,
+                highlightbackground=border_color,
+                highlightcolor=border_color,
+                highlightthickness=border_thickness,
+            )
+        except tk.TclError:
+            return
 
         assignments = self._calendar_assignments.get(date_key, [])
         has_assignments = bool(assignments)
@@ -930,8 +970,18 @@ class YBSApp:
             )
             orders_bg = ORDERS_LIST_BACKGROUND
 
-        day_cell.header_label.configure(bg=header_bg, fg=TEXT_COLOR)
-        day_cell.orders_list.configure(bg=orders_bg, fg=TEXT_COLOR)
+        if is_active:
+            header_bg = ACTIVE_DAY_HEADER_BACKGROUND
+
+        try:
+            day_cell.header_label.configure(bg=header_bg, fg=TEXT_COLOR)
+        except tk.TclError:
+            return
+
+        try:
+            day_cell.orders_list.configure(bg=orders_bg, fg=TEXT_COLOR)
+        except tk.TclError:
+            return
 
     def _save_day_notes(self, date_key: DateKey) -> None:
         day_cell = self._day_cells.get(date_key)
