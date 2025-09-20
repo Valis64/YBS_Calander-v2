@@ -12,7 +12,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, TypeVar
 
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
 
@@ -41,6 +41,8 @@ ADJACENT_MONTH_ORDERS_BACKGROUND = "#0a1c36"
 DRAG_THRESHOLD = 5
 
 DateKey = Tuple[int, int, int]
+
+SelectionItem = TypeVar("SelectionItem")
 
 
 STATE_PATH = Path.home() / ".ybs_print_calander" / "state.json"
@@ -161,6 +163,80 @@ class YBSApp:
         if sys.platform == "darwin":
             control_masks += (0x0010,)
         return any(cls._event_state_has_flag(event, mask) for mask in control_masks)
+
+    def _compute_multi_selection(
+        self,
+        ordered_items: Sequence[SelectionItem],
+        current_selection: Iterable[SelectionItem],
+        target_item: SelectionItem,
+        anchor_item: SelectionItem | None,
+        ctrl_pressed: bool,
+        shift_pressed: bool,
+    ) -> tuple[tuple[SelectionItem, ...], SelectionItem | None]:
+        ordered_tuple: tuple[SelectionItem, ...] = tuple(ordered_items)
+        if not ordered_tuple:
+            return tuple(), None
+
+        ordered_set = set(ordered_tuple)
+        valid_anchor: SelectionItem | None = (
+            anchor_item if anchor_item in ordered_set else None
+        )
+
+        selected_set = {
+            item for item in current_selection if item in ordered_set
+        }
+        normalized_selection = tuple(
+            item for item in ordered_tuple if item in selected_set
+        )
+
+        if target_item not in ordered_set:
+            fallback_anchor = valid_anchor
+            if fallback_anchor is None and normalized_selection:
+                fallback_anchor = normalized_selection[-1]
+            return normalized_selection, fallback_anchor
+
+        if shift_pressed:
+            anchor_for_range = valid_anchor if valid_anchor is not None else target_item
+            try:
+                start_index = ordered_tuple.index(anchor_for_range)
+            except ValueError:
+                anchor_for_range = target_item
+                start_index = ordered_tuple.index(anchor_for_range)
+            try:
+                end_index = ordered_tuple.index(target_item)
+            except ValueError:
+                return normalized_selection, anchor_for_range
+            if start_index > end_index:
+                start_index, end_index = end_index, start_index
+            selection = tuple(ordered_tuple[start_index : end_index + 1])
+            return selection, anchor_for_range
+
+        if ctrl_pressed:
+            mutable_selection: set[SelectionItem] = set(normalized_selection)
+            if target_item in mutable_selection:
+                mutable_selection.remove(target_item)
+                selection = tuple(
+                    item for item in ordered_tuple if item in mutable_selection
+                )
+                if valid_anchor in mutable_selection:
+                    anchor_candidate: SelectionItem | None = valid_anchor
+                elif selection:
+                    anchor_candidate = selection[-1]
+                else:
+                    anchor_candidate = None
+            else:
+                mutable_selection.add(target_item)
+                selection = tuple(
+                    item for item in ordered_tuple if item in mutable_selection
+                )
+                anchor_candidate = target_item
+            return selection, anchor_candidate
+
+        if target_item in normalized_selection:
+            return normalized_selection, target_item
+
+        selection = (target_item,)
+        return selection, target_item
 
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
@@ -1552,49 +1628,38 @@ class YBSApp:
             )
             return "break"
 
-        children = list(self.tree.get_children(""))
-        anchor = self.tree.focus()
+        children = tuple(self.tree.get_children(""))
+        try:
+            anchor = self.tree.selection_anchor()
+        except tk.TclError:
+            anchor = None
         if anchor not in children:
             anchor = None
 
         previous_selection = tuple(self.tree.selection())
-        anchor_target: str | None = None
+        new_selection, new_anchor = self._compute_multi_selection(
+            children,
+            previous_selection,
+            item_id,
+            anchor,
+            ctrl_pressed,
+            shift_pressed,
+        )
 
-        if shift_pressed and children:
-            if anchor is None:
-                anchor = item_id
-            try:
-                start_index = children.index(anchor)
-                end_index = children.index(item_id)
-            except ValueError:
-                selection = (item_id,)
-            else:
-                if start_index > end_index:
-                    start_index, end_index = end_index, start_index
-                selection = children[start_index : end_index + 1]
-            self.tree.selection_set(selection)
-            if anchor is not None:
-                anchor_target = anchor
-        elif ctrl_pressed:
-            if item_id in self.tree.selection():
-                self.tree.selection_remove(item_id)
-            else:
-                self.tree.selection_add(item_id)
+        if new_selection:
+            self.tree.selection_set(new_selection)
         else:
-            if item_id not in previous_selection:
-                self.tree.selection_set((item_id,))
-                anchor_target = item_id
+            self.tree.selection_remove(self.tree.selection())
 
         self.tree.focus(item_id)
 
-        new_selection = tuple(self.tree.selection())
-        if anchor_target is not None and new_selection != previous_selection:
-            self.tree.selection_anchor(anchor_target)
+        if new_anchor is not None:
+            try:
+                self.tree.selection_anchor(new_anchor)
+            except tk.TclError:
+                pass
 
-        selected_set = set(self.tree.selection())
-        ordered_selection = tuple(
-            child for child in children if child in selected_set
-        )
+        ordered_selection = new_selection
 
         normalized_values: list[Tuple[str, str]] = []
         for selected_id in ordered_selection:
@@ -1764,33 +1829,34 @@ class YBSApp:
                 orders_list.selection_clear(0, tk.END)
             return "break"
 
-        if shift_pressed:
-            try:
-                anchor = int(orders_list.index(tk.ANCHOR))
-            except (tk.TclError, ValueError):
-                anchor = index
-            start = min(anchor, index)
-            end = max(anchor, index)
-            orders_list.selection_clear(0, tk.END)
-            for idx in range(start, end + 1):
-                orders_list.selection_set(idx)
-            orders_list.selection_anchor(anchor)
-        elif ctrl_pressed:
-            if orders_list.selection_includes(index):
-                orders_list.selection_clear(index)
-            else:
-                orders_list.selection_set(index)
-                orders_list.selection_anchor(index)
-        else:
-            if not orders_list.selection_includes(index):
-                orders_list.selection_clear(0, tk.END)
-                orders_list.selection_set(index)
-            orders_list.selection_anchor(index)
+        total_indices = tuple(range(len(assignments)))
+        existing_selection = tuple(int(i) for i in orders_list.curselection())
+        try:
+            anchor_index = int(orders_list.index(tk.ANCHOR))
+        except (tk.TclError, ValueError):
+            anchor_index = None
+        if anchor_index not in total_indices:
+            anchor_index = None
+
+        new_selection, new_anchor = self._compute_multi_selection(
+            total_indices,
+            existing_selection,
+            index,
+            anchor_index,
+            ctrl_pressed,
+            shift_pressed,
+        )
+
+        orders_list.selection_clear(0, tk.END)
+        for idx in new_selection:
+            orders_list.selection_set(idx)
+
+        if new_anchor is not None:
+            orders_list.selection_anchor(new_anchor)
 
         orders_list.activate(index)
 
-        current_selection = orders_list.curselection()
-        selected_indices: tuple[int, ...] = tuple(int(i) for i in current_selection)
+        selected_indices: tuple[int, ...] = tuple(int(i) for i in new_selection)
 
         normalized_assignments: list[Tuple[str, str]] = []
         for idx in selected_indices:
