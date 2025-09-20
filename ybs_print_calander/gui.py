@@ -2551,11 +2551,16 @@ class YBSApp:
             if drag_was_active:
                 self._end_drag()
                 return "break"
-            return None
+            self._end_drag()
+            # Prevent the default Treeview handler from overriding the
+            # selection we maintain manually when no drag occurs.
+            return "break"
 
         if not drag_was_active:
             self._end_drag()
-            return None
+            # Swallow the event so Tk does not collapse the selection when the
+            # user releases modifier keys after a click.
+            return "break"
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
