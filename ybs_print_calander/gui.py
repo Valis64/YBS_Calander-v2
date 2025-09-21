@@ -2245,6 +2245,7 @@ class YBSApp:
             "selection_anchor": None,
             "focus_item": None,
             "active_index": None,
+            "pending_toggle": None,
         }
 
     def _normalize_tree_anchor(self, children: list[str]) -> str | None:
@@ -2398,6 +2399,7 @@ class YBSApp:
         item_id = self.tree.identify_row(event.y)
         ctrl_pressed = self._is_control_pressed(event)
         shift_pressed = self._is_shift_pressed(event)
+        pending_toggle_item: str | None = None
 
         if not item_id:
             if not ctrl_pressed and not shift_pressed:
@@ -2421,6 +2423,7 @@ class YBSApp:
                     "active_index": None,
                 }
             )
+            self._drag_data["pending_toggle"] = None
             return "break"
 
         children = list(self.tree.get_children(""))
@@ -2448,13 +2451,7 @@ class YBSApp:
             self._tree_selection_anchor = anchor
         elif ctrl_pressed:
             if item_id in current_selection:
-                try:
-                    self.tree.selection_remove(item_id)
-                except tk.TclError:
-                    pass
-                current_selection.discard(item_id)
-                if not current_selection:
-                    self._tree_selection_anchor = None
+                pending_toggle_item = item_id
             else:
                 try:
                     self.tree.selection_add(item_id)
@@ -2507,6 +2504,7 @@ class YBSApp:
                 "active_index": None,
             }
         )
+        self._drag_data["pending_toggle"] = pending_toggle_item
 
         return "break"
 
@@ -2543,6 +2541,7 @@ class YBSApp:
     def _on_order_release(self, event: tk.Event) -> str | None:
         items = self._drag_data.get("items")
         drag_was_active = bool(self._drag_data.get("active"))
+        pending_toggle = self._drag_data.get("pending_toggle")
 
         if items:
             self._restore_drag_selection()
@@ -2554,6 +2553,11 @@ class YBSApp:
             return None
 
         if not drag_was_active:
+            if (
+                isinstance(pending_toggle, str)
+                and self._drag_data.get("source") == "tree"
+            ):
+                self._apply_tree_pending_toggle(pending_toggle)
             self._end_drag()
             return None
 
@@ -3013,6 +3017,8 @@ class YBSApp:
                 preview += ", ..."
             label_text = f"{len(labels)} orders: {preview}"
 
+        self._drag_data["pending_toggle"] = None
+
         drag_window = tk.Toplevel(self.root)
         drag_window.overrideredirect(True)
         try:  # pragma: no cover - platform dependent feature
@@ -3226,6 +3232,38 @@ class YBSApp:
             pass
 
         self._tree_selection_anchor = None
+
+    def _apply_tree_pending_toggle(self, item_id: str) -> None:
+        """Remove ``item_id`` from the orders tree selection."""
+
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            self._drag_data["pending_toggle"] = None
+            return
+
+        try:
+            children = set(tree.get_children(""))
+        except tk.TclError:
+            children = set()
+
+        if item_id not in children:
+            self._drag_data["pending_toggle"] = None
+            return
+
+        try:
+            tree.selection_remove(item_id)
+        except tk.TclError:
+            pass
+
+        try:
+            remaining = tree.selection()
+        except tk.TclError:
+            remaining = ()
+
+        if not remaining:
+            self._tree_selection_anchor = None
+
+        self._drag_data["pending_toggle"] = None
 
     def _end_drag(self) -> None:
         widget = self._drag_data.get("widget")
