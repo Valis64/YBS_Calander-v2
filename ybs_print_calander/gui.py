@@ -1298,7 +1298,7 @@ class YBSApp:
             columns=("order", "company"),
             show="headings",
             style="Dark.Treeview",
-            selectmode="browse",
+            selectmode=tk.EXTENDED,
         )
         self.tree.heading("order", text="Order#", anchor="center")
         self.tree.heading("company", text="Company", anchor="center")
