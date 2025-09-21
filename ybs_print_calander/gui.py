@@ -66,6 +66,148 @@ XRANDR_MONITOR_PATTERN = re.compile(
 STATE_PATH = Path.home() / ".ybs_print_calander" / "state.json"
 
 
+class HoverTooltip:
+    """Display contextual hover text for a widget after a small delay."""
+
+    def __init__(self, widget: tk.Widget, text: str, *, delay: int = 500) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._after_id: str | None = None
+        self._pointer: tuple[int, int] | None = None
+        self._visible = False
+        self._widget_destroyed = False
+
+        tooltip: tk.Toplevel | None
+        try:
+            tooltip = tk.Toplevel(widget.winfo_toplevel())
+        except tk.TclError:
+            tooltip = None
+
+        self._tooltip = tooltip
+
+        if tooltip is not None:
+            tooltip.withdraw()
+            try:
+                tooltip.wm_overrideredirect(True)
+            except tk.TclError:
+                pass
+            try:
+                tooltip.transient(widget.winfo_toplevel())
+            except tk.TclError:
+                pass
+            try:
+                tooltip.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            tooltip.configure(background=ACCENT_COLOR, padx=1, pady=1)
+
+            label = tk.Label(
+                tooltip,
+                text=text,
+                background=ACCENT_COLOR,
+                foreground=TEXT_COLOR,
+                borderwidth=0,
+                highlightthickness=0,
+                justify="left",
+                wraplength=280,
+                padx=10,
+                pady=6,
+            )
+            label.pack()
+
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+        widget.bind("<Motion>", self._on_motion, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+        widget.bind("<Destroy>", self._on_widget_destroy, add="+")
+
+    def _on_enter(self, event: tk.Event) -> None:
+        self._pointer = self._event_pointer(event)
+        self._schedule_show()
+
+    def _on_motion(self, event: tk.Event) -> None:
+        self._pointer = self._event_pointer(event)
+        if self._visible:
+            self._hide()
+        self._schedule_show()
+
+    def _on_leave(self, _: tk.Event | None) -> None:
+        self._hide()
+
+    def _on_widget_destroy(self, _: tk.Event | None) -> None:
+        self._widget_destroyed = True
+        self._hide()
+        tooltip = self._tooltip
+        if tooltip is not None:
+            try:
+                tooltip.destroy()
+            except tk.TclError:
+                pass
+            self._tooltip = None
+
+    def _event_pointer(self, event: tk.Event) -> tuple[int, int]:
+        x_root = getattr(event, "x_root", 0)
+        y_root = getattr(event, "y_root", 0)
+        try:
+            return (int(x_root), int(y_root))
+        except (TypeError, ValueError):
+            return (0, 0)
+
+    def _schedule_show(self) -> None:
+        if self._widget_destroyed:
+            return
+        self._cancel_scheduled_show()
+        try:
+            self._after_id = self.widget.after(self.delay, self._show)
+        except tk.TclError:
+            self._after_id = None
+
+    def _cancel_scheduled_show(self) -> None:
+        if self._after_id is None:
+            return
+        try:
+            self.widget.after_cancel(self._after_id)
+        except tk.TclError:
+            pass
+        self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._visible or self._tooltip is None or self._widget_destroyed:
+            return
+        if not self.widget.winfo_exists():
+            return
+        try:
+            self._tooltip.deiconify()
+            self._tooltip.lift()
+        except tk.TclError:
+            return
+        self._visible = True
+        self._reposition()
+
+    def _hide(self) -> None:
+        self._cancel_scheduled_show()
+        if not self._visible or self._tooltip is None:
+            return
+        try:
+            self._tooltip.withdraw()
+        except tk.TclError:
+            pass
+        self._visible = False
+
+    def _reposition(self) -> None:
+        if not self._visible or self._tooltip is None:
+            return
+        if self._pointer is None:
+            return
+        x, y = self._pointer
+        try:
+            self._tooltip.geometry(f"+{x + 16}+{y + 16}")
+        except tk.TclError:
+            pass
+
+
 @dataclass
 class DayCell:
     """Container for widgets that make up a calendar day cell."""
@@ -1175,6 +1317,15 @@ class YBSApp:
         self.tree.bind("<KeyPress-Down>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Left>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Right>", self._on_tree_key_navigate)
+
+        self._orders_tooltip = HoverTooltip(
+            self.tree,
+            (
+                "Shift-click to select a range. "
+                "Ctrl/Cmd-click to toggle items. "
+                "Drag the selection onto a day to schedule."
+            ),
+        )
 
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(2, weight=1)
