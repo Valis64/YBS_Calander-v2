@@ -1312,6 +1312,8 @@ class YBSApp:
         scrollbar.grid(row=2, column=1, sticky="ns")
 
         self.tree.bind("<ButtonPress-1>", self._on_order_press)
+        self.tree.bind("<B1-Motion>", self._on_order_drag)
+        self.tree.bind("<ButtonRelease-1>", self._on_order_release)
         self.tree.bind("<KeyPress-Up>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Down>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Left>", self._on_tree_key_navigate)
@@ -2555,6 +2557,80 @@ class YBSApp:
 
         return "break"
 
+    def _update_tree_drag_data(
+        self,
+        *,
+        start_x: int | None = None,
+        start_y: int | None = None,
+        fallback_focus: str | None = None,
+    ) -> None:
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return
+
+        try:
+            children = list(tree.get_children(""))
+        except tk.TclError:
+            children = []
+
+        index_map = {child: idx for idx, child in enumerate(children)}
+
+        try:
+            selected_items = tree.selection()
+        except tk.TclError:
+            selected_items = ()
+
+        selection_set = {item for item in selected_items if item in index_map}
+        ordered_selection = tuple(
+            child for child in children if child in selection_set
+        )
+
+        normalized_orders: list[Tuple[str, str]] = []
+        for item in ordered_selection:
+            try:
+                values = tree.item(item, "values")
+            except tk.TclError:
+                values = ()
+            normalized_orders.append(self._normalize_assignment(values))
+
+        anchor_item = (
+            self._tree_selection_anchor
+            if self._tree_selection_anchor in index_map
+            else None
+        )
+
+        focus_item = tree.focus()
+        if focus_item not in index_map:
+            fallback = fallback_focus if fallback_focus in index_map else None
+            focus_item = fallback
+
+        updates: dict[str, object] = {
+            "items": ordered_selection,
+            "values": tuple(normalized_orders),
+            "source": "tree",
+            "source_date_key": None,
+            "source_indices": tuple(index_map[item] for item in ordered_selection),
+            "source_assignments": tuple(normalized_orders),
+            "selection_snapshot": ordered_selection,
+            "selection_anchor": anchor_item,
+            "focus_item": focus_item,
+            "active_index": None,
+        }
+
+        if start_x is not None:
+            try:
+                updates["start_x"] = int(start_x)
+            except (TypeError, ValueError):
+                updates["start_x"] = int(self._drag_data.get("start_x", 0))
+
+        if start_y is not None:
+            try:
+                updates["start_y"] = int(start_y)
+            except (TypeError, ValueError):
+                updates["start_y"] = int(self._drag_data.get("start_y", 0))
+
+        self._drag_data.update(updates)
+
     def _on_order_press(self, event: tk.Event) -> str | None:
         self._end_drag()
         self._clear_other_day_selections(None)
@@ -2643,49 +2719,178 @@ class YBSApp:
         except tk.TclError:
             pass
 
-        selected_after = tuple(tree.selection())
-        selected_set = {item for item in selected_after if item in index_map}
-        ordered_selection = tuple(
-            child for child in children if child in selected_set
+        try:
+            start_x = int(getattr(event, "x_root", 0))
+        except (TypeError, ValueError):
+            start_x = 0
+
+        try:
+            start_y = int(getattr(event, "y_root", 0))
+        except (TypeError, ValueError):
+            start_y = 0
+
+        fallback_focus = item_id if item_id in index_map else None
+        self._update_tree_drag_data(
+            start_x=start_x,
+            start_y=start_y,
+            fallback_focus=fallback_focus,
         )
 
-        normalized_orders: list[Tuple[str, str]] = []
-        for item in ordered_selection:
+        return "break"
+
+    def _on_order_drag(self, event: tk.Event) -> str | None:
+        if self._drag_data.get("source") not in (None, "tree"):
+            return None
+
+        if not self._drag_data.get("items"):
             try:
-                values = tree.item(item, "values")
-            except tk.TclError:
-                values = ()
-            normalized_orders.append(self._normalize_assignment(values))
+                start_x = int(getattr(event, "x_root", 0))
+            except (TypeError, ValueError):
+                start_x = 0
+            try:
+                start_y = int(getattr(event, "y_root", 0))
+            except (TypeError, ValueError):
+                start_y = 0
+            self._update_tree_drag_data(start_x=start_x, start_y=start_y)
+        else:
+            self._update_tree_drag_data()
 
-        anchor_for_drag = (
-            self._tree_selection_anchor
-            if self._tree_selection_anchor in index_map
-            else None
-        )
+        items = self._drag_data.get("items")
+        if not items:
+            return None
 
-        focus_item = tree.focus()
-        if focus_item not in index_map:
-            focus_item = item_id if item_id in index_map else None
+        self._restore_drag_selection()
 
-        self._drag_data.update(
-            {
-                "items": ordered_selection,
-                "values": tuple(normalized_orders),
-                "start_x": event.x_root,
-                "start_y": event.y_root,
-                "widget": None,
-                "active": False,
-                "source": "tree",
-                "source_date_key": None,
-                "source_indices": tuple(index_map[item] for item in ordered_selection),
-                "source_assignments": tuple(normalized_orders),
-                "selection_snapshot": ordered_selection,
-                "selection_anchor": anchor_for_drag,
-                "focus_item": focus_item,
-                "active_index": None,
-            }
-        )
+        try:
+            x_root = int(getattr(event, "x_root", 0))
+        except (TypeError, ValueError):
+            x_root = 0
+        try:
+            y_root = int(getattr(event, "y_root", 0))
+        except (TypeError, ValueError):
+            y_root = 0
 
+        drag_active = bool(self._drag_data.get("active"))
+        if not drag_active:
+            try:
+                start_x = int(self._drag_data.get("start_x", x_root))
+            except (TypeError, ValueError):
+                start_x = x_root
+            try:
+                start_y = int(self._drag_data.get("start_y", y_root))
+            except (TypeError, ValueError):
+                start_y = y_root
+            if (
+                abs(x_root - start_x) >= DRAG_THRESHOLD
+                or abs(y_root - start_y) >= DRAG_THRESHOLD
+            ):
+                self._begin_drag()
+                drag_active = bool(self._drag_data.get("active"))
+                if drag_active:
+                    self._restore_drag_selection()
+
+        if drag_active:
+            self._position_drag_window(x_root, y_root)
+
+        target_info = self._detect_calendar_target(x_root, y_root)
+        self._update_calendar_hover(target_info)
+        return "break"
+
+    def _on_order_release(self, event: tk.Event) -> str | None:
+        drag_was_active = bool(self._drag_data.get("active"))
+
+        if self._drag_data.get("source") != "tree":
+            self._end_drag()
+            return "break" if drag_was_active else None
+
+        self._update_tree_drag_data()
+
+        items = self._drag_data.get("items")
+        if items:
+            self._restore_drag_selection()
+        if not items:
+            self._end_drag()
+            return "break" if drag_was_active else None
+
+        if not drag_was_active:
+            self._end_drag()
+            return None
+
+        try:
+            x_root = int(getattr(event, "x_root", 0))
+        except (TypeError, ValueError):
+            x_root = 0
+        try:
+            y_root = int(getattr(event, "y_root", 0))
+        except (TypeError, ValueError):
+            y_root = 0
+
+        target_info = self._detect_calendar_target(x_root, y_root)
+        normalized_key: DateKey | None = None
+        if target_info:
+            raw_key = target_info.get("date_key")
+            if isinstance(raw_key, (tuple, list)) and len(raw_key) == 3:
+                try:
+                    normalized_key = (
+                        int(raw_key[0]),
+                        int(raw_key[1]),
+                        int(raw_key[2]),
+                    )
+                except (TypeError, ValueError):
+                    normalized_key = None
+
+        if normalized_key is not None:
+            raw_orders = self._drag_data.get("values", ())
+            if not isinstance(raw_orders, (tuple, list)) or not raw_orders:
+                self._queue.put(
+                    (
+                        "calendar_drop",
+                        False,
+                        "Unable to determine which order was dragged.",
+                        None,
+                    )
+                )
+            else:
+                normalized_orders = tuple(
+                    self._normalize_assignment(order) for order in raw_orders
+                )
+
+                target_label = self._format_date_label(normalized_key)
+                message = self._format_assignment_move_message(
+                    normalized_orders, target_label
+                )
+
+                payload: dict[str, object] = {
+                    "date_key": normalized_key,
+                    "orders": normalized_orders,
+                    "source_kind": "tree",
+                }
+
+                source_indices = self._drag_data.get("source_indices", ())
+                if isinstance(source_indices, (tuple, list)):
+                    payload["source_indices"] = tuple(
+                        int(index) for index in source_indices
+                    )
+
+                source_assignments = self._drag_data.get("source_assignments", ())
+                if isinstance(source_assignments, (tuple, list)):
+                    payload["source_orders"] = tuple(
+                        self._normalize_assignment(order)
+                        for order in source_assignments
+                    )
+
+                self._queue.put(("calendar_drop", True, message, payload))
+        else:
+            self._queue.put(
+                (
+                    "calendar_drop",
+                    False,
+                    "Please drop orders onto a valid calendar day.",
+                    None,
+                )
+            )
+
+        self._end_drag()
         return "break"
 
     def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> str | None:
