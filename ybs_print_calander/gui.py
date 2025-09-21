@@ -1318,6 +1318,10 @@ class YBSApp:
         self.tree.bind("<KeyPress-Down>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Left>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Right>", self._on_tree_key_navigate)
+        self.tree.bind("<KeyPress-space>", self._on_tree_toggle_with_keyboard)
+        self.tree.bind(
+            "<Control-KeyPress-space>", self._on_tree_toggle_with_keyboard
+        )
 
         self._orders_tooltip = HoverTooltip(
             self.tree,
@@ -2656,6 +2660,122 @@ class YBSApp:
 
         try:
             self.tree.see(target)
+        except tk.TclError:
+            pass
+
+        self._update_tree_drag_data(event)
+
+        return "break"
+
+    def _on_tree_toggle_with_keyboard(self, event: tk.Event) -> str | None:
+        self._end_drag()
+        self._clear_other_day_selections(None)
+
+        try:
+            children = list(self.tree.get_children(""))
+        except tk.TclError:
+            children = []
+
+        if not children:
+            self._clear_tree_selection()
+            self._update_tree_drag_data(event)
+            return "break"
+
+        try:
+            current_selection = tuple(self.tree.selection())
+        except tk.TclError:
+            current_selection = ()
+
+        selection_set = set(current_selection)
+
+        focus_item = self.tree.focus()
+        if focus_item not in children:
+            fallback_item: str | None = None
+            for item in reversed(current_selection):
+                if item in children:
+                    fallback_item = item
+                    break
+            if fallback_item is not None:
+                focus_item = fallback_item
+            else:
+                anchor_item = self._tree_selection_anchor
+                if anchor_item in children:
+                    focus_item = anchor_item
+                elif children:
+                    focus_item = children[0]
+
+        if focus_item not in children:
+            self._update_tree_drag_data(event)
+            return "break"
+
+        shift_pressed = self._is_shift_pressed(event)
+        ctrl_pressed = self._is_control_pressed(event)
+
+        if shift_pressed:
+            anchor_item = self._tree_selection_anchor
+            if anchor_item not in children:
+                anchor_item = focus_item
+                self._tree_selection_anchor = anchor_item
+            if anchor_item in children:
+                anchor_index = children.index(anchor_item)
+                focus_index = children.index(focus_item)
+                start = min(anchor_index, focus_index)
+                end = max(anchor_index, focus_index)
+                selected_range = children[start : end + 1]
+                if current_selection:
+                    try:
+                        self.tree.selection_remove(*current_selection)
+                    except tk.TclError:
+                        pass
+                if selected_range:
+                    try:
+                        self.tree.selection_set(*selected_range)
+                    except tk.TclError:
+                        pass
+                try:
+                    self.tree.selection_anchor(anchor_item)
+                except tk.TclError:
+                    pass
+                self._tree_selection_anchor = anchor_item
+        elif ctrl_pressed:
+            if focus_item in selection_set:
+                try:
+                    self.tree.selection_remove(focus_item)
+                except tk.TclError:
+                    pass
+            else:
+                try:
+                    self.tree.selection_add(focus_item)
+                except tk.TclError:
+                    pass
+                try:
+                    self.tree.selection_anchor(focus_item)
+                except tk.TclError:
+                    pass
+        else:
+            if len(selection_set) != 1 or focus_item not in selection_set:
+                if current_selection:
+                    try:
+                        self.tree.selection_remove(*current_selection)
+                    except tk.TclError:
+                        pass
+                try:
+                    self.tree.selection_set(focus_item)
+                except tk.TclError:
+                    pass
+            try:
+                self.tree.selection_anchor(focus_item)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = focus_item
+
+        try:
+            self.tree.focus(focus_item)
+        except tk.TclError:
+            pass
+
+        try:
+            self.tree.see(focus_item)
         except tk.TclError:
             pass
 
