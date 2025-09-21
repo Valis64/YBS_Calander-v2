@@ -2245,6 +2245,7 @@ class YBSApp:
             "selection_anchor": None,
             "focus_item": None,
             "active_index": None,
+            "pending_tree_toggle": False,
         }
 
     def _normalize_tree_anchor(self, children: list[str]) -> str | None:
@@ -2399,6 +2400,8 @@ class YBSApp:
         ctrl_pressed = self._is_control_pressed(event)
         shift_pressed = self._is_shift_pressed(event)
 
+        self._drag_data["pending_tree_toggle"] = False
+
         if not item_id:
             if not ctrl_pressed and not shift_pressed:
                 self.tree.selection_remove(self.tree.selection())
@@ -2448,18 +2451,13 @@ class YBSApp:
             self._tree_selection_anchor = anchor
         elif ctrl_pressed:
             if item_id in current_selection:
-                try:
-                    self.tree.selection_remove(item_id)
-                except tk.TclError:
-                    pass
-                current_selection.discard(item_id)
-                if not current_selection:
-                    self._tree_selection_anchor = None
+                self._drag_data["pending_tree_toggle"] = True
             else:
                 try:
                     self.tree.selection_add(item_id)
                 except tk.TclError:
                     pass
+                self._drag_data["pending_tree_toggle"] = False
                 if anchor is None:
                     self._tree_selection_anchor = item_id
         else:
@@ -2515,6 +2513,17 @@ class YBSApp:
         if not items:
             return None
 
+        if self._drag_data.get("pending_tree_toggle"):
+            pressed_item = self._drag_data.get("focus_item")
+            tree_widget = getattr(self, "tree", None)
+            if tree_widget is not None and isinstance(pressed_item, str):
+                try:
+                    hovered_item = tree_widget.identify_row(event.y)
+                except tk.TclError:
+                    hovered_item = ""
+                if hovered_item != pressed_item:
+                    self._drag_data["pending_tree_toggle"] = False
+
         self._restore_drag_selection()
 
         x_root = int(getattr(event, "x_root", 0))
@@ -2554,6 +2563,28 @@ class YBSApp:
             return None
 
         if not drag_was_active:
+            if self._drag_data.get("pending_tree_toggle"):
+                pressed_item = self._drag_data.get("focus_item")
+                tree_widget = getattr(self, "tree", None)
+                same_row = False
+                if tree_widget is not None and isinstance(pressed_item, str):
+                    try:
+                        hovered_item = tree_widget.identify_row(event.y)
+                    except tk.TclError:
+                        hovered_item = ""
+                    same_row = hovered_item == pressed_item
+                if same_row and tree_widget is not None:
+                    try:
+                        tree_widget.selection_remove(pressed_item)
+                    except tk.TclError:
+                        pass
+                    try:
+                        remaining = tree_widget.selection()
+                    except tk.TclError:
+                        remaining = ()
+                    if not remaining:
+                        self._tree_selection_anchor = None
+                self._drag_data["pending_tree_toggle"] = False
             self._end_drag()
             return None
 
@@ -2998,6 +3029,8 @@ class YBSApp:
         values = self._drag_data.get("values", ())
         if not items or not isinstance(values, (tuple, list)):
             return
+
+        self._drag_data["pending_tree_toggle"] = False
 
         normalized_orders = [
             self._normalize_assignment(value) for value in values
