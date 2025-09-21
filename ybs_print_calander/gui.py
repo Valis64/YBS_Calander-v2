@@ -15,7 +15,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, ClassVar, Dict, Iterable, List, Tuple
 
 from . import __version__
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
@@ -231,6 +231,8 @@ class DayCell:
 class YBSApp:
     """Encapsulates the Tkinter application."""
 
+    _active_control_modifiers: ClassVar[dict[tuple[str, object], int]] = {}
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(APP_TITLE)
@@ -260,6 +262,7 @@ class YBSApp:
         self._undo_stack_limit = 100
         self._redo_stack: list[dict[str, Any]] = []
         self._redo_stack_limit = self._undo_stack_limit
+        type(self)._active_control_modifiers.clear()
         self._cached_monitor_bounds: tuple[int, int, int, int] | None = None
         self._cached_monitor_geometry: tuple[int, int, int, int] | None = None
 
@@ -282,6 +285,38 @@ class YBSApp:
         self.root.bind_all("<Command-Shift-Z>", self._redo_last_action)
         self.root.bind_all("<Control-y>", self._redo_last_action)
         self.root.bind_all("<Command-y>", self._redo_last_action)
+        control_modifier_press_sequences = (
+            "<KeyPress-Control_L>",
+            "<KeyPress-Control_R>",
+            "<KeyPress-Control>",
+            "<KeyPress-Command_L>",
+            "<KeyPress-Command_R>",
+            "<KeyPress-Command>",
+            "<KeyPress-Meta_L>",
+            "<KeyPress-Meta_R>",
+            "<KeyPress-Meta>",
+        )
+        control_modifier_release_sequences = (
+            "<KeyRelease-Control_L>",
+            "<KeyRelease-Control_R>",
+            "<KeyRelease-Control>",
+            "<KeyRelease-Command_L>",
+            "<KeyRelease-Command_R>",
+            "<KeyRelease-Command>",
+            "<KeyRelease-Meta_L>",
+            "<KeyRelease-Meta_R>",
+            "<KeyRelease-Meta>",
+        )
+        for sequence in control_modifier_press_sequences:
+            try:
+                self.root.bind_all(sequence, self._on_control_modifier_press, add="+")
+            except tk.TclError:
+                pass
+        for sequence in control_modifier_release_sequences:
+            try:
+                self.root.bind_all(sequence, self._on_control_modifier_release, add="+")
+            except tk.TclError:
+                pass
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queue()
 
@@ -330,10 +365,86 @@ class YBSApp:
 
     @classmethod
     def _is_control_pressed(cls, event: tk.Event | None) -> bool:
-        control_masks: tuple[int, ...] = (0x0004,)
+        control_masks = [0x0004]
+        if sys.platform.startswith("win"):
+            control_masks.append(0x0008)
         if sys.platform == "darwin":
-            control_masks += (0x0010,)
-        return any(cls._event_state_has_flag(event, mask) for mask in control_masks)
+            control_masks.extend((0x0010, 0x0040))
+        if any(cls._event_state_has_flag(event, mask) for mask in control_masks):
+            return True
+        return bool(cls._active_control_modifiers)
+
+    @staticmethod
+    def _control_modifier_group(event: tk.Event | None) -> str | None:
+        if event is None:
+            return None
+        normalized = str(getattr(event, "keysym", "")).lower()
+        mapping = {
+            "control": "control",
+            "control_l": "control",
+            "control_r": "control",
+            "command": "command",
+            "command_l": "command",
+            "command_r": "command",
+            "meta": "command",
+            "meta_l": "command",
+            "meta_r": "command",
+        }
+        return mapping.get(normalized)
+
+    @classmethod
+    def _identify_control_modifier(
+        cls, event: tk.Event | None
+    ) -> tuple[str, object] | None:
+        if event is None:
+            return None
+        group = cls._control_modifier_group(event)
+        if group is None:
+            return None
+        keycode_value = getattr(event, "keycode", None)
+        try:
+            normalized_code = int(keycode_value)
+        except (TypeError, ValueError):
+            normalized_code = None
+        if normalized_code is not None and normalized_code >= 0:
+            identifier_value: object = normalized_code
+        else:
+            identifier_value = str(getattr(event, "keysym", "")).lower() or group
+        return (group, identifier_value)
+
+    @classmethod
+    def _clear_control_modifier_group(cls, event: tk.Event | None) -> None:
+        group = cls._control_modifier_group(event)
+        if group is None:
+            return
+        to_remove = [
+            key for key in cls._active_control_modifiers if key[0] == group
+        ]
+        for key in to_remove:
+            cls._active_control_modifiers.pop(key, None)
+
+    def _on_control_modifier_press(self, event: tk.Event | None) -> None:
+        identifier = self._identify_control_modifier(event)
+        if identifier is None:
+            return
+        counts = type(self)._active_control_modifiers
+        counts[identifier] = counts.get(identifier, 0) + 1
+
+    def _on_control_modifier_release(self, event: tk.Event | None) -> None:
+        cls = type(self)
+        counts = cls._active_control_modifiers
+        identifier = self._identify_control_modifier(event)
+        if identifier is None:
+            cls._clear_control_modifier_group(event)
+            return
+        remaining = counts.get(identifier)
+        if remaining is None:
+            cls._clear_control_modifier_group(event)
+            return
+        if remaining <= 1:
+            counts.pop(identifier, None)
+        else:
+            counts[identifier] = remaining - 1
 
     def _invalidate_monitor_cache(self, *_: object) -> None:
         """Clear cached monitor information."""
