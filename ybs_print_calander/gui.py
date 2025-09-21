@@ -1163,11 +1163,17 @@ class YBSApp:
         self.tree.column("company", anchor="center", width=400)
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(
-            yscrollcommand=scrollbar.set,
-            exportselection=False,
-            selectmode=tk.EXTENDED,
-        )
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        # Guard Treeview configuration so builds that omit these options still
+        # run while retaining the improved behaviour where available.
+        try:
+            self.tree.configure(exportselection=False)
+        except tk.TclError:
+            pass
+        try:
+            self.tree.configure(selectmode="extended")
+        except tk.TclError:
+            pass
 
         self.tree.grid(row=2, column=0, sticky="nsew")
         scrollbar.grid(row=2, column=1, sticky="ns")
