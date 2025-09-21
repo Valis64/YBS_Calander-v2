@@ -2708,10 +2708,8 @@ class YBSApp:
             self._restore_drag_selection()
 
         if not items:
-            if drag_was_active:
-                self._end_drag()
-                return "break"
-            return None
+            self._end_drag()
+            return "break"
 
         if not drag_was_active:
             if self._drag_data.get("pending_tree_toggle"):
@@ -2737,7 +2735,7 @@ class YBSApp:
                         self._tree_selection_anchor = None
                 self._drag_data["pending_tree_toggle"] = False
             self._end_drag()
-            return None
+            return "break"
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
