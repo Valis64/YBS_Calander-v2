@@ -2516,27 +2516,101 @@ class YBSApp:
         self._end_drag()
         self._clear_other_day_selections(None)
 
-        item_id = self.tree.identify_row(event.y)
+        tree = self.tree
+        ctrl_pressed = self._is_control_pressed(event)
+        shift_pressed = self._is_shift_pressed(event)
+
+        item_id = tree.identify_row(event.y)
         if not item_id:
-            self._clear_tree_selection()
+            if not ctrl_pressed and not shift_pressed:
+                self._clear_tree_selection()
             return "break"
 
         try:
-            self.tree.selection_set((item_id,))
+            children = list(tree.get_children(""))
+        except tk.TclError:
+            children = []
+
+        if item_id not in children:
+            return "break"
+
+        anchor_item: str | None
+
+        if shift_pressed:
+            anchor_item = self._tree_selection_anchor
+            if anchor_item not in children:
+                try:
+                    current_selection = tree.selection()
+                except tk.TclError:
+                    current_selection = ()
+                anchor_item = next(
+                    (candidate for candidate in current_selection if candidate in children),
+                    None,
+                )
+            if anchor_item not in children:
+                focus_item = tree.focus()
+                anchor_item = focus_item if focus_item in children else None
+            if anchor_item not in children:
+                anchor_item = item_id
+
+            try:
+                start_index = children.index(anchor_item)
+                end_index = children.index(item_id)
+            except ValueError:
+                start_index = end_index = children.index(item_id)
+                anchor_item = item_id
+
+            if start_index <= end_index:
+                selection_range = children[start_index : end_index + 1]
+            else:
+                selection_range = children[end_index : start_index + 1]
+
+            try:
+                tree.selection_set(selection_range)
+            except tk.TclError:
+                pass
+        elif ctrl_pressed:
+            anchor_item = item_id
+            try:
+                current_selection = tree.selection()
+            except tk.TclError:
+                current_selection = ()
+
+            if item_id in current_selection:
+                try:
+                    tree.selection_remove(item_id)
+                except tk.TclError:
+                    pass
+            else:
+                try:
+                    tree.selection_add(item_id)
+                except tk.TclError:
+                    pass
+        else:
+            anchor_item = item_id
+            try:
+                tree.selection_set((item_id,))
+            except tk.TclError:
+                pass
+
+        try:
+            tree.focus(item_id)
         except tk.TclError:
             pass
 
         try:
-            self.tree.focus(item_id)
+            tree.see(item_id)
         except tk.TclError:
             pass
 
-        try:
-            self.tree.see(item_id)
-        except tk.TclError:
-            pass
-
-        self._tree_selection_anchor = item_id
+        if isinstance(anchor_item, str):
+            self._tree_selection_anchor = anchor_item
+            try:
+                tree.selection_anchor(anchor_item)
+            except tk.TclError:
+                pass
+        else:
+            self._tree_selection_anchor = None
 
         return "break"
 
