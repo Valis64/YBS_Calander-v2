@@ -1298,7 +1298,7 @@ class YBSApp:
             columns=("order", "company"),
             show="headings",
             style="Dark.Treeview",
-            selectmode="browse",
+            selectmode="extended",
         )
         self.tree.heading("order", text="Order#", anchor="center")
         self.tree.heading("company", text="Company", anchor="center")
@@ -2483,22 +2483,65 @@ class YBSApp:
         if not children:
             return "break"
 
+        index_map = {item: idx for idx, item in enumerate(children)}
+
         focus_item = self.tree.focus()
-        if focus_item not in children:
-            focus_index = 0 if direction >= 0 else len(children) - 1
+        if focus_item not in index_map:
+            current_selection = [
+                item for item in self.tree.selection() if item in index_map
+            ]
+            if current_selection:
+                focus_item = current_selection[-1]
+            else:
+                fallback_index = 0 if direction >= 0 else len(children) - 1
+                focus_item = children[fallback_index]
+
+        focus_index = index_map.get(
+            focus_item, 0 if direction >= 0 else len(children) - 1
+        )
+
+        target_index = max(0, min(focus_index + direction, len(children) - 1))
+        target = children[target_index]
+
+        extend_selection = self._is_shift_pressed(event)
+        ctrl_pressed = self._is_control_pressed(event)
+
+        if extend_selection:
+            anchor_item = self._tree_selection_anchor
+            if anchor_item not in index_map:
+                anchor_item = focus_item if focus_item in index_map else target
+            start = min(index_map[anchor_item], target_index)
+            end = max(index_map[anchor_item], target_index)
+            items_to_select = children[start : end + 1]
+            try:
+                self.tree.selection_set(items_to_select)
+            except tk.TclError:
+                pass
+            try:
+                self.tree.selection_anchor(anchor_item)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = anchor_item
+        elif ctrl_pressed:
+            try:
+                self.tree.focus(target)
+            except tk.TclError:
+                pass
+            try:
+                self.tree.see(target)
+            except tk.TclError:
+                pass
+            return "break"
         else:
-            focus_index = children.index(focus_item)
-
-        new_index = focus_index + direction
-        new_index = max(0, min(new_index, len(children) - 1))
-        target = children[new_index]
-
-        try:
-            self.tree.selection_set((target,))
-        except tk.TclError:
-            pass
-
-        self._tree_selection_anchor = target
+            try:
+                self.tree.selection_set((target,))
+            except tk.TclError:
+                pass
+            try:
+                self.tree.selection_anchor(target)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = target
 
         try:
             self.tree.focus(target)
@@ -2516,27 +2559,132 @@ class YBSApp:
         self._end_drag()
         self._clear_other_day_selections(None)
 
-        item_id = self.tree.identify_row(event.y)
-        if not item_id:
-            self._clear_tree_selection()
+        ctrl_pressed = self._is_control_pressed(event)
+        shift_pressed = self._is_shift_pressed(event)
+
+        tree = self.tree
+        item_id = tree.identify_row(event.y)
+        children = list(tree.get_children(""))
+        index_map = {child: idx for idx, child in enumerate(children)}
+
+        if not item_id or item_id not in index_map:
+            if not ctrl_pressed and not shift_pressed:
+                self._clear_tree_selection()
             return "break"
 
         try:
-            self.tree.selection_set((item_id,))
+            bbox = tree.bbox(item_id)
+        except tk.TclError:
+            bbox = None
+
+        if not bbox or not (bbox[1] <= event.y <= bbox[1] + bbox[3]):
+            if not ctrl_pressed and not shift_pressed:
+                self._clear_tree_selection()
+            return "break"
+
+        anchor_item = self._tree_selection_anchor
+        if anchor_item not in index_map:
+            anchor_item = None
+
+        if shift_pressed:
+            if anchor_item is None:
+                existing_selection = [
+                    item for item in tree.selection() if item in index_map
+                ]
+                anchor_item = existing_selection[0] if existing_selection else item_id
+            anchor_index = index_map.get(anchor_item, index_map[item_id])
+            target_index = index_map[item_id]
+            start = min(anchor_index, target_index)
+            end = max(anchor_index, target_index)
+            items_to_select = children[start : end + 1]
+            try:
+                tree.selection_set(items_to_select)
+            except tk.TclError:
+                pass
+            try:
+                tree.selection_anchor(anchor_item)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = anchor_item
+        elif ctrl_pressed:
+            current_selection = set(tree.selection())
+            if item_id in current_selection:
+                try:
+                    tree.selection_remove(item_id)
+                except tk.TclError:
+                    pass
+            else:
+                try:
+                    tree.selection_add(item_id)
+                except tk.TclError:
+                    pass
+                try:
+                    tree.selection_anchor(item_id)
+                except tk.TclError:
+                    pass
+        else:
+            try:
+                tree.selection_set((item_id,))
+            except tk.TclError:
+                pass
+            try:
+                tree.selection_anchor(item_id)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = item_id
+
+        try:
+            tree.focus(item_id)
         except tk.TclError:
             pass
 
         try:
-            self.tree.focus(item_id)
+            tree.see(item_id)
         except tk.TclError:
             pass
 
-        try:
-            self.tree.see(item_id)
-        except tk.TclError:
-            pass
+        selected_after = tuple(tree.selection())
+        selected_set = {item for item in selected_after if item in index_map}
+        ordered_selection = tuple(
+            child for child in children if child in selected_set
+        )
 
-        self._tree_selection_anchor = item_id
+        normalized_orders: list[Tuple[str, str]] = []
+        for item in ordered_selection:
+            try:
+                values = tree.item(item, "values")
+            except tk.TclError:
+                values = ()
+            normalized_orders.append(self._normalize_assignment(values))
+
+        anchor_for_drag = (
+            self._tree_selection_anchor
+            if self._tree_selection_anchor in index_map
+            else None
+        )
+
+        focus_item = tree.focus()
+        if focus_item not in index_map:
+            focus_item = item_id if item_id in index_map else None
+
+        self._drag_data.update(
+            {
+                "items": ordered_selection,
+                "values": tuple(normalized_orders),
+                "start_x": event.x_root,
+                "start_y": event.y_root,
+                "widget": None,
+                "active": False,
+                "source": "tree",
+                "source_date_key": None,
+                "source_indices": tuple(index_map[item] for item in ordered_selection),
+                "source_assignments": tuple(normalized_orders),
+                "selection_snapshot": ordered_selection,
+                "selection_anchor": anchor_for_drag,
+                "focus_item": focus_item,
+                "active_index": None,
+            }
+        )
 
         return "break"
 
