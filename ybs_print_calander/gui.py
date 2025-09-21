@@ -2493,12 +2493,61 @@ class YBSApp:
         new_index = max(0, min(new_index, len(children) - 1))
         target = children[new_index]
 
-        try:
-            self.tree.selection_set((target,))
-        except tk.TclError:
-            pass
+        shift_pressed = self._is_shift_pressed(event)
+        ctrl_pressed = self._is_control_pressed(event)
 
-        self._tree_selection_anchor = target
+        anchor_item: str | None
+
+        if shift_pressed:
+            anchor_item = self._tree_selection_anchor
+            if anchor_item not in children:
+                try:
+                    current_selection = self.tree.selection()
+                except tk.TclError:
+                    current_selection = ()
+                anchor_item = next(
+                    (candidate for candidate in current_selection if candidate in children),
+                    None,
+                )
+            if anchor_item not in children:
+                focus_item = self.tree.focus()
+                anchor_item = focus_item if focus_item in children else None
+            if anchor_item not in children:
+                anchor_item = target
+
+            try:
+                start_index = children.index(anchor_item)
+                end_index = children.index(target)
+            except ValueError:
+                start_index = end_index = children.index(target)
+                anchor_item = target
+
+            if start_index <= end_index:
+                selection_range = children[start_index : end_index + 1]
+            else:
+                selection_range = children[end_index : start_index + 1]
+
+            try:
+                self.tree.selection_set(selection_range)
+            except tk.TclError:
+                pass
+        elif ctrl_pressed:
+            anchor_item = target
+        else:
+            anchor_item = target
+            try:
+                self.tree.selection_set((target,))
+            except tk.TclError:
+                pass
+
+        if isinstance(anchor_item, str):
+            self._tree_selection_anchor = anchor_item
+            try:
+                self.tree.selection_anchor(anchor_item)
+            except tk.TclError:
+                pass
+        else:
+            self._tree_selection_anchor = None
 
         try:
             self.tree.focus(target)
