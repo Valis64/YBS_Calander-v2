@@ -1298,7 +1298,7 @@ class YBSApp:
             columns=("order", "company"),
             show="headings",
             style="Dark.Treeview",
-            selectmode="browse",
+            selectmode="extended",
         )
         self.tree.heading("order", text="Order#", anchor="center")
         self.tree.heading("company", text="Company", anchor="center")
@@ -1312,6 +1312,8 @@ class YBSApp:
         scrollbar.grid(row=2, column=1, sticky="ns")
 
         self.tree.bind("<ButtonPress-1>", self._on_order_press)
+        self.tree.bind("<B1-Motion>", self._on_tree_drag)
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_release)
         self.tree.bind("<KeyPress-Up>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Down>", self._on_tree_key_navigate)
         self.tree.bind("<KeyPress-Left>", self._on_tree_key_navigate)
@@ -2483,7 +2485,9 @@ class YBSApp:
         if not children:
             return "break"
 
-        focus_item = self.tree.focus()
+        tree = self.tree
+
+        focus_item = tree.focus()
         if focus_item not in children:
             focus_index = 0 if direction >= 0 else len(children) - 1
         else:
@@ -2493,20 +2497,61 @@ class YBSApp:
         new_index = max(0, min(new_index, len(children) - 1))
         target = children[new_index]
 
+        shift_pressed = self._is_shift_pressed(event)
+        ctrl_pressed = self._is_control_pressed(event)
+
+        if shift_pressed:
+            anchor = self._tree_selection_anchor
+            if anchor not in children:
+                if focus_item in children:
+                    anchor = focus_item
+                else:
+                    try:
+                        current_selection = tree.selection()
+                    except tk.TclError:
+                        current_selection = ()
+                    anchor = next(
+                        (child for child in children if child in current_selection),
+                        None,
+                    )
+                if anchor not in children:
+                    anchor = target
+            try:
+                anchor_index = children.index(anchor)
+            except ValueError:
+                anchor = target
+                anchor_index = children.index(anchor)
+
+            start = min(anchor_index, new_index)
+            end = max(anchor_index, new_index)
+            selection = children[start : end + 1]
+            try:
+                tree.selection_set(selection)
+                tree.selection_anchor(anchor)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = anchor
+        elif ctrl_pressed:
+            self._tree_selection_anchor = target
+            try:
+                tree.selection_anchor(target)
+            except tk.TclError:
+                pass
+        else:
+            try:
+                tree.selection_set((target,))
+                tree.selection_anchor(target)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = target
+
         try:
-            self.tree.selection_set((target,))
+            tree.focus(target)
         except tk.TclError:
             pass
 
-        self._tree_selection_anchor = target
-
         try:
-            self.tree.focus(target)
-        except tk.TclError:
-            pass
-
-        try:
-            self.tree.see(target)
+            tree.see(target)
         except tk.TclError:
             pass
 
@@ -2516,28 +2561,308 @@ class YBSApp:
         self._end_drag()
         self._clear_other_day_selections(None)
 
-        item_id = self.tree.identify_row(event.y)
-        if not item_id:
-            self._clear_tree_selection()
+        tree = self.tree
+        children = list(tree.get_children(""))
+
+        ctrl_pressed = self._is_control_pressed(event)
+        shift_pressed = self._is_shift_pressed(event)
+
+        item_id = tree.identify_row(event.y)
+        if not item_id or item_id not in children:
+            if not ctrl_pressed and not shift_pressed:
+                self._clear_tree_selection()
+            self._update_tree_drag_data(event)
             return "break"
 
         try:
-            self.tree.selection_set((item_id,))
+            current_selection = set(tree.selection())
+        except tk.TclError:
+            current_selection = set()
+
+        if shift_pressed:
+            anchor = self._tree_selection_anchor
+            if anchor not in children:
+                focus_item = tree.focus()
+                if focus_item in children:
+                    anchor = focus_item
+                elif current_selection:
+                    anchor = next(
+                        (child for child in children if child in current_selection),
+                        item_id,
+                    )
+                else:
+                    anchor = item_id
+            try:
+                anchor_index = children.index(anchor)
+            except ValueError:
+                anchor = item_id
+                anchor_index = children.index(anchor)
+
+            target_index = children.index(item_id)
+            start = min(anchor_index, target_index)
+            end = max(anchor_index, target_index)
+            selection = children[start : end + 1]
+            try:
+                tree.selection_set(selection)
+                tree.selection_anchor(anchor)
+            except tk.TclError:
+                pass
+            self._tree_selection_anchor = anchor
+        elif ctrl_pressed:
+            if item_id in current_selection:
+                try:
+                    tree.selection_remove(item_id)
+                except tk.TclError:
+                    pass
+                try:
+                    remaining = tree.selection()
+                except tk.TclError:
+                    remaining = ()
+                ordered_remaining = [
+                    child for child in children if child in remaining
+                ]
+                if ordered_remaining:
+                    new_anchor = ordered_remaining[0]
+                    self._tree_selection_anchor = new_anchor
+                    try:
+                        tree.selection_anchor(new_anchor)
+                    except tk.TclError:
+                        pass
+                else:
+                    self._tree_selection_anchor = None
+                    try:
+                        tree.selection_anchor("")
+                    except tk.TclError:
+                        pass
+            else:
+                try:
+                    tree.selection_add(item_id)
+                    tree.selection_anchor(item_id)
+                except tk.TclError:
+                    pass
+                self._tree_selection_anchor = item_id
+        else:
+            if not current_selection or item_id not in current_selection:
+                try:
+                    tree.selection_set((item_id,))
+                    tree.selection_anchor(item_id)
+                except tk.TclError:
+                    pass
+                self._tree_selection_anchor = item_id
+            elif self._tree_selection_anchor not in children:
+                try:
+                    tree.selection_anchor(item_id)
+                except tk.TclError:
+                    pass
+                self._tree_selection_anchor = item_id
+
+        try:
+            tree.focus(item_id)
         except tk.TclError:
             pass
 
         try:
-            self.tree.focus(item_id)
+            tree.see(item_id)
         except tk.TclError:
             pass
+
+        self._update_tree_drag_data(event)
+
+        return "break"
+
+    def _update_tree_drag_data(self, event: tk.Event | None) -> None:
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return
+
+        children = list(tree.get_children(""))
 
         try:
-            self.tree.see(item_id)
+            selection = tree.selection()
         except tk.TclError:
-            pass
+            selection = ()
 
-        self._tree_selection_anchor = item_id
+        ordered_selection = tuple(child for child in children if child in selection)
 
+        values: list[Tuple[str, ...]] = []
+        for item in ordered_selection:
+            try:
+                raw_values = tree.item(item, "values")
+            except tk.TclError:
+                raw_values = ()
+            if not isinstance(raw_values, (tuple, list)):
+                raw_values = (raw_values,)
+            normalized = tuple(str(value) for value in raw_values)
+            values.append(normalized)
+
+        try:
+            start_x = int(getattr(event, "x_root", 0))
+        except (TypeError, ValueError):
+            start_x = 0
+
+        try:
+            start_y = int(getattr(event, "y_root", 0))
+        except (TypeError, ValueError):
+            start_y = 0
+
+        focus_item = tree.focus()
+        if focus_item not in children:
+            focus_item = None
+
+        anchor = self._tree_selection_anchor
+        if anchor not in children:
+            anchor = None
+
+        self._drag_data.update(
+            {
+                "items": ordered_selection,
+                "values": tuple(values),
+                "start_x": start_x,
+                "start_y": start_y,
+                "widget": None,
+                "active": False,
+                "source": "tree",
+                "source_date_key": None,
+                "source_indices": (),
+                "source_assignments": (),
+                "selection_snapshot": ordered_selection,
+                "selection_anchor": anchor,
+                "focus_item": focus_item,
+                "active_index": None,
+            }
+        )
+
+    def _on_tree_drag(self, event: tk.Event) -> str | None:
+        if self._drag_data.get("source") not in {None, "tree"}:
+            return None
+
+        items = self._drag_data.get("items")
+        if not items:
+            return None
+
+        self._restore_drag_selection()
+
+        try:
+            x_root = int(getattr(event, "x_root", 0))
+        except (TypeError, ValueError):
+            x_root = 0
+
+        try:
+            y_root = int(getattr(event, "y_root", 0))
+        except (TypeError, ValueError):
+            y_root = 0
+
+        drag_active = bool(self._drag_data.get("active"))
+        if not drag_active:
+            try:
+                start_x = int(self._drag_data.get("start_x", x_root))
+            except (TypeError, ValueError):
+                start_x = x_root
+            try:
+                start_y = int(self._drag_data.get("start_y", y_root))
+            except (TypeError, ValueError):
+                start_y = y_root
+
+            if (
+                abs(x_root - start_x) >= DRAG_THRESHOLD
+                or abs(y_root - start_y) >= DRAG_THRESHOLD
+            ):
+                self._begin_drag()
+                drag_active = bool(self._drag_data.get("active"))
+                if drag_active:
+                    self._restore_drag_selection()
+
+        if drag_active:
+            self._position_drag_window(x_root, y_root)
+
+        target_info = self._detect_calendar_target(x_root, y_root)
+        self._update_calendar_hover(target_info)
+        return "break"
+
+    def _on_tree_release(self, event: tk.Event) -> str | None:
+        drag_was_active = bool(self._drag_data.get("active"))
+
+        if self._drag_data.get("source") != "tree":
+            self._end_drag()
+            return "break" if drag_was_active else None
+
+        items = self._drag_data.get("items")
+        if not items:
+            self._end_drag()
+            return "break" if drag_was_active else None
+
+        if not drag_was_active:
+            self._end_drag()
+            return None
+
+        self._restore_drag_selection()
+
+        try:
+            x_root = int(getattr(event, "x_root", 0))
+        except (TypeError, ValueError):
+            x_root = 0
+
+        try:
+            y_root = int(getattr(event, "y_root", 0))
+        except (TypeError, ValueError):
+            y_root = 0
+
+        target_info = self._detect_calendar_target(x_root, y_root)
+
+        normalized_key: DateKey | None = None
+        if target_info:
+            raw_key = target_info.get("date_key")
+            if isinstance(raw_key, (tuple, list)) and len(raw_key) == 3:
+                try:
+                    normalized_key = (
+                        int(raw_key[0]),
+                        int(raw_key[1]),
+                        int(raw_key[2]),
+                    )
+                except (TypeError, ValueError):
+                    normalized_key = None
+
+        if normalized_key is None:
+            self._queue.put(
+                (
+                    "calendar_drop",
+                    False,
+                    "Please drop orders onto a valid calendar day.",
+                    None,
+                )
+            )
+            self._end_drag()
+            return "break"
+
+        raw_orders = self._drag_data.get("values", ())
+        if not isinstance(raw_orders, (tuple, list)) or not raw_orders:
+            self._queue.put(
+                (
+                    "calendar_drop",
+                    False,
+                    "Unable to determine which order was dragged.",
+                    None,
+                )
+            )
+            self._end_drag()
+            return "break"
+
+        normalized_orders = tuple(
+            self._normalize_assignment(order) for order in raw_orders
+        )
+
+        target_label = self._format_date_label(normalized_key)
+        message = self._format_assignment_move_message(normalized_orders, target_label)
+
+        payload: dict[str, object] = {
+            "date_key": normalized_key,
+            "orders": normalized_orders,
+            "source_kind": "tree",
+        }
+
+        self._queue.put(("calendar_drop", True, message, payload))
+
+        self._end_drag()
         return "break"
 
     def _on_day_order_press(self, event: tk.Event, date_key: DateKey) -> str | None:
