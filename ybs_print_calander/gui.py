@@ -165,10 +165,27 @@ class YBSApp:
 
     @classmethod
     def _is_control_pressed(cls, event: tk.Event | None) -> bool:
-        control_masks: tuple[int, ...] = (0x0004,)
+        control_masks: list[int] = [0x0004]
         if sys.platform == "darwin":
-            control_masks += (0x0010,)
-        return any(cls._event_state_has_flag(event, mask) for mask in control_masks)
+            # Tk can report the Command key using Mod1 (0x0008) or Mod2 (0x0010)
+            # depending on the Python/Tk build. Treat either as a control modifier
+            # so multi-select works consistently on macOS.
+            control_masks.extend((0x0008, 0x0010))
+
+        if any(cls._event_state_has_flag(event, mask) for mask in control_masks):
+            return True
+
+        # Fall back to the keysym value for key events where the state mask might
+        # not be populated yet (for example on some platforms when handling
+        # KeyPress bindings).
+        keysym = str(getattr(event, "keysym", ""))
+        return keysym.lower() in {
+            "control_l",
+            "control_r",
+            "command",
+            "meta_l",
+            "meta_r",
+        }
 
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
