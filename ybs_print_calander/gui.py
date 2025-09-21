@@ -1163,7 +1163,11 @@ class YBSApp:
         self.tree.column("company", anchor="center", width=400)
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.configure(
+            yscrollcommand=scrollbar.set,
+            exportselection=False,
+            selectmode=tk.EXTENDED,
+        )
 
         self.tree.grid(row=2, column=0, sticky="nsew")
         scrollbar.grid(row=2, column=1, sticky="ns")
