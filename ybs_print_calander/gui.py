@@ -129,9 +129,8 @@ class HoverTooltip:
     def _on_motion(self, event: tk.Event) -> None:
         self._pointer = self._event_pointer(event)
         if self._visible:
-            self._reposition()
-        else:
-            self._schedule_show()
+            self._hide()
+        self._schedule_show()
 
     def _on_leave(self, _: tk.Event | None) -> None:
         self._hide()
