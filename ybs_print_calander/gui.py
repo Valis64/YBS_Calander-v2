@@ -1298,7 +1298,7 @@ class YBSApp:
             columns=("order", "company"),
             show="headings",
             style="Dark.Treeview",
-            selectmode="browse",
+            selectmode="extended",
         )
         self.tree.heading("order", text="Order#", anchor="center")
         self.tree.heading("company", text="Company", anchor="center")
@@ -2521,10 +2521,62 @@ class YBSApp:
             self._clear_tree_selection()
             return "break"
 
-        try:
-            self.tree.selection_set((item_id,))
-        except tk.TclError:
-            pass
+        ctrl_pressed = self._is_control_pressed(event)
+        shift_pressed = self._is_shift_pressed(event)
+
+        children = list(self.tree.get_children(""))
+        anchor_to_apply: str | None = None
+
+        if shift_pressed and children:
+            anchor = self._tree_selection_anchor
+            if anchor not in children:
+                anchor = item_id
+            try:
+                anchor_index = children.index(anchor)
+            except ValueError:
+                anchor_index = None
+            try:
+                target_index = children.index(item_id)
+            except ValueError:
+                target_index = None
+
+            if anchor_index is None or target_index is None:
+                try:
+                    self.tree.selection_set((item_id,))
+                except tk.TclError:
+                    pass
+                anchor_to_apply = item_id
+            else:
+                start = min(anchor_index, target_index)
+                end = max(anchor_index, target_index)
+                selection_range = children[start : end + 1]
+                try:
+                    self.tree.selection_set(selection_range)
+                except tk.TclError:
+                    pass
+                anchor_to_apply = anchor
+        elif ctrl_pressed:
+            try:
+                current_selection = tuple(self.tree.selection())
+            except tk.TclError:
+                current_selection = ()
+            if item_id in current_selection:
+                try:
+                    self.tree.selection_remove(item_id)
+                except tk.TclError:
+                    pass
+            else:
+                try:
+                    self.tree.selection_add(item_id)
+                except tk.TclError:
+                    pass
+            anchor_to_apply = item_id
+        else:
+            try:
+                self.tree.selection_set((item_id,))
+            except tk.TclError:
+                pass
+            anchor_to_apply = item_id
 
         try:
             self.tree.focus(item_id)
@@ -2536,7 +2588,12 @@ class YBSApp:
         except tk.TclError:
             pass
 
-        self._tree_selection_anchor = item_id
+        if anchor_to_apply is not None:
+            try:
+                self.tree.selection_anchor(anchor_to_apply)
+            except tk.TclError:
+                pass
+        self._tree_selection_anchor = anchor_to_apply
 
         return "break"
 
