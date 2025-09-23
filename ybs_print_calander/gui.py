@@ -2493,12 +2493,15 @@ class YBSApp:
         new_index = max(0, min(new_index, len(children) - 1))
         target = children[new_index]
 
-        try:
-            self.tree.selection_set((target,))
-        except tk.TclError:
-            pass
+        ctrl_pressed = self._is_control_pressed(event)
 
-        self._tree_selection_anchor = target
+        if not ctrl_pressed:
+            try:
+                self.tree.selection_set((target,))
+            except tk.TclError:
+                pass
+
+            self._tree_selection_anchor = target
 
         try:
             self.tree.focus(target)
