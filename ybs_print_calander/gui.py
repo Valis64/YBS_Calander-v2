@@ -2393,6 +2393,7 @@ class YBSApp:
             "selection_anchor": None,
             "focus_item": None,
             "active_index": None,
+            "clicked_item": None,
         }
 
     def _restore_drag_selection(self) -> None:
@@ -2572,6 +2573,28 @@ class YBSApp:
         if not item_exists(anchor_item):
             anchor_item = focus_item
 
+        if not valid_items:
+            fallback_item = self._drag_data.get("clicked_item")
+            if item_exists(fallback_item):
+                try:
+                    row_values = tree.item(fallback_item, "values")
+                except tk.TclError:
+                    normalized_values = ()
+                else:
+                    if isinstance(row_values, (list, tuple)):
+                        normalized_values = tuple(row_values)
+                    elif row_values is None:
+                        normalized_values = ()
+                    else:
+                        normalized_values = (row_values,)
+
+                valid_items = [fallback_item]
+                values = [normalized_values]
+                if focus_item is None and item_exists(fallback_item):
+                    focus_item = fallback_item
+                if anchor_item is None and item_exists(fallback_item):
+                    anchor_item = fallback_item
+
         self._drag_data.update(
             {
                 "items": tuple(valid_items),
@@ -2630,6 +2653,7 @@ class YBSApp:
                 "selection_anchor": self._tree_selection_anchor,
                 "focus_item": None,
                 "active_index": None,
+                "clicked_item": clicked_item,
             }
         )
 
@@ -2691,8 +2715,6 @@ class YBSApp:
             return "break" if drag_was_active else None
 
         items = self._drag_data.get("items")
-        if isinstance(items, (tuple, list)) and items:
-            self._restore_drag_selection()
         if not isinstance(items, (tuple, list)) or not items:
             self._end_drag()
             return "break" if drag_was_active else None
@@ -2700,6 +2722,8 @@ class YBSApp:
         if not drag_was_active:
             self._end_drag()
             return None
+
+        self._restore_drag_selection()
 
         try:
             x_root = int(getattr(event, "x_root", 0))
@@ -2799,6 +2823,7 @@ class YBSApp:
                     "selection_anchor": None,
                     "focus_item": None,
                     "active_index": None,
+                    "clicked_item": None,
                 }
             )
             return "break"
@@ -2885,6 +2910,7 @@ class YBSApp:
                 "selection_anchor": anchor_value,
                 "focus_item": None,
                 "active_index": index,
+                "clicked_item": None,
             }
         )
 
@@ -3039,15 +3065,15 @@ class YBSApp:
             return "break" if drag_was_active else None
 
         items = self._drag_data.get("items")
-        if items:
-            self._restore_drag_selection()
-        if not items:
+        if not isinstance(items, (tuple, list)) or not items:
             self._end_drag()
             return "break" if drag_was_active else None
 
         if not drag_was_active:
             self._end_drag()
             return None
+
+        self._restore_drag_selection()
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
