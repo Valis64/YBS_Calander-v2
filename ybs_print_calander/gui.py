@@ -41,6 +41,11 @@ ADJACENT_MONTH_DAY_CELL_BACKGROUND = "#0b1f3d"
 ADJACENT_MONTH_TEXT_COLOR = "#a5b3c8"
 ADJACENT_MONTH_NOTES_BACKGROUND = "#0d2749"
 ADJACENT_MONTH_ORDERS_BACKGROUND = "#0a1c36"
+DURATION_BAR_COLOR = "#1f5d8c"
+DURATION_BAR_SELECTED_COLOR = "#2f8fd8"
+DURATION_BAR_EMPTY_COLOR = "#1b3f6a"
+DURATION_BAR_LABEL_COLOR = "#a8bedc"
+DURATION_BAR_LABEL_SELECTED_COLOR = TEXT_COLOR
 
 APP_NAME = "YBS Print Calander"
 APP_TITLE = f"{APP_NAME} v{__version__}"
@@ -570,6 +575,7 @@ class DayCell:
     frame: tk.Frame
     header_label: tk.Label
     notes_text: tk.Text
+    duration_canvas: tk.Canvas
     orders_list: tk.Listbox
     default_bg: str
     header_fg: str = TEXT_COLOR
@@ -2023,6 +2029,44 @@ class YBSApp:
                     lambda event: (self._invoke_text_widget_redo(event), "break")[1],
                 )
 
+                duration_canvas = tk.Canvas(
+                    cell_frame,
+                    height=40,
+                    background=orders_bg,
+                    highlightthickness=0,
+                    bd=0,
+                    relief="flat",
+                )
+                duration_canvas.grid(
+                    row=2, column=0, sticky="nsew", padx=4, pady=(0, 2)
+                )
+                duration_canvas.bind(
+                    "<Configure>",
+                    lambda event, key=date_key: self._on_duration_canvas_configure(
+                        event, key
+                    ),
+                )
+                duration_canvas.bind(
+                    "<ButtonPress-1>",
+                    lambda event, key=date_key: self._on_duration_canvas_press(
+                        event, key
+                    ),
+                )
+                duration_canvas.bind(
+                    "<B1-Motion>",
+                    lambda event, key=date_key: self._on_duration_canvas_drag(event, key),
+                )
+                duration_canvas.bind(
+                    "<ButtonRelease-1>",
+                    lambda event, key=date_key: self._on_duration_canvas_release(
+                        event, key
+                    ),
+                )
+                duration_canvas.bind(
+                    "<Double-Button-1>",
+                    lambda event, key=date_key: self._open_day_details(key),
+                )
+
                 orders_list = tk.Listbox(
                     cell_frame,
                     height=3,
@@ -2040,12 +2084,14 @@ class YBSApp:
                     relief="flat",
                     bd=0,
                 )
-                orders_list.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 4))
+                orders_list.grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 4))
+                cell_frame.rowconfigure(3, weight=1)
 
                 day_cell = DayCell(
                     frame=cell_frame,
                     header_label=header_label,
                     notes_text=notes_text,
+                    duration_canvas=duration_canvas,
                     orders_list=orders_list,
                     default_bg=cell_background,
                     header_fg=header_fg,
@@ -2114,6 +2160,13 @@ class YBSApp:
                     lambda event, key=date_key: self._on_day_order_key_navigate(
                         event, key, 1
                     ),
+                )
+                orders_list.bind(
+                    "<<ListboxSelect>>",
+                    lambda event, key=date_key: self._queue_duration_selection_refresh(
+                        key
+                    ),
+                    add="+",
                 )
                 orders_list.bind(
                     "<KeyPress-Right>",
@@ -2495,6 +2548,7 @@ class YBSApp:
             self._calendar_assignments.pop(date_key, None)
 
         orders_list.selection_clear(0, tk.END)
+        self._queue_duration_selection_refresh(date_key)
         self._update_day_cell_display(date_key)
         self._schedule_state_save()
 
@@ -2551,6 +2605,16 @@ class YBSApp:
         info_label = ttk.Label(frame, textvariable=info_var, style="Dark.TLabel")
         info_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 10))
 
+        duration_canvas = tk.Canvas(
+            frame,
+            height=80,
+            bg=ORDERS_LIST_BACKGROUND,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
+        duration_canvas.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+
         listbox = tk.Listbox(
             frame,
             height=8,
@@ -2566,28 +2630,80 @@ class YBSApp:
             selectbackground="#1e90ff",
             relief="flat",
         )
-        listbox.grid(row=2, column=0, sticky="nsew")
+        listbox.grid(row=3, column=0, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=listbox.yview)
         listbox.config(yscrollcommand=scrollbar.set)
-        scrollbar.grid(row=2, column=1, sticky="ns")
+        scrollbar.grid(row=3, column=1, sticky="ns")
 
         button_frame = ttk.Frame(frame, style="Dark.TFrame")
-        button_frame.grid(row=3, column=0, columnspan=2, sticky="e", pady=(15, 0))
+        button_frame.grid(row=4, column=0, columnspan=2, sticky="e", pady=(15, 0))
 
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(3, weight=1)
+
+        def redraw_canvas(assignments: Iterable[OrderRecord]) -> None:
+            row_height = self._get_listbox_row_height(listbox)
+            selected_indices = listbox.curselection()
+            self._render_duration_canvas(
+                duration_canvas,
+                assignments,
+                row_height=row_height,
+                selected_indices=selected_indices,
+                date_key=date_key,
+            )
+
+        def queue_canvas_redraw() -> None:
+            assignments = self._calendar_assignments.get(date_key, [])
+            redraw_canvas(assignments)
+
+        def on_canvas_configure(event: tk.Event) -> None:
+            after_id = getattr(duration_canvas, "_ybs_detail_after", None)
+            if after_id:
+                try:
+                    duration_canvas.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            try:
+                duration_canvas._ybs_detail_after = duration_canvas.after(
+                    30, queue_canvas_redraw
+                )
+            except tk.TclError:
+                pass
 
         def update_button_states(*_: object) -> None:
             assignments = self._calendar_assignments.get(date_key, [])
             has_assignments = bool(assignments)
-            info_var.set("" if has_assignments else "No orders scheduled for this day.")
+            if not has_assignments:
+                info_var.set("No orders scheduled for this day.")
+            else:
+                durations = [
+                    duration
+                    for duration in (
+                        self._get_assignment_duration(assignment)
+                        for assignment in assignments
+                    )
+                    if duration is not None
+                ]
+                if durations:
+                    total_minutes = sum(durations)
+                    if abs(total_minutes - round(total_minutes)) <= 0.05:
+                        total_text = f"{int(round(total_minutes))}"
+                    else:
+                        total_text = f"{total_minutes:.1f}"
+                    info_var.set(
+                        "Estimated duration: "
+                        f"{total_text} min across {len(durations)} of {len(assignments)} orders."
+                    )
+                else:
+                    info_var.set("No estimated durations recorded for these orders.")
             clear_state = tk.NORMAL if has_assignments else tk.DISABLED
             clear_button.config(state=clear_state)
             if has_assignments and listbox.curselection():
                 remove_button.config(state=tk.NORMAL)
             else:
                 remove_button.config(state=tk.DISABLED)
+            redraw_canvas(assignments)
 
         def refresh_list(select_index: int | None = None) -> None:
             assignments = self._calendar_assignments.get(date_key, [])
@@ -2602,6 +2718,25 @@ class YBSApp:
             ):
                 listbox.selection_set(select_index)
             update_button_states()
+
+        def on_canvas_click(event: tk.Event) -> str | None:
+            try:
+                index = self._canvas_index_from_event(duration_canvas, event)
+            except Exception:
+                index = None
+            if index is None:
+                return "break"
+
+            try:
+                listbox.selection_clear(0, tk.END)
+                listbox.selection_set(index)
+                listbox.activate(index)
+                listbox.see(index)
+            except tk.TclError:
+                return "break"
+
+            update_button_states()
+            return "break"
 
         def remove_selected() -> None:
             selection = listbox.curselection()
@@ -2689,7 +2824,9 @@ class YBSApp:
         )
         close_button.grid(row=0, column=2)
 
-        listbox.bind("<<ListboxSelect>>", update_button_states)
+        listbox.bind("<<ListboxSelect>>", update_button_states, add="+")
+        duration_canvas.bind("<ButtonPress-1>", on_canvas_click)
+        duration_canvas.bind("<Configure>", on_canvas_configure)
         window.protocol("WM_DELETE_WINDOW", close_dialog)
 
         refresh_list()
@@ -3325,6 +3462,7 @@ class YBSApp:
             }
         )
 
+        self._queue_duration_selection_refresh(date_key)
         return "break"
 
     def _on_day_order_key_navigate(
@@ -3423,6 +3561,7 @@ class YBSApp:
         except tk.TclError:
             pass
 
+        self._queue_duration_selection_refresh(date_key)
         return "break"
 
     def _on_day_order_drag(self, event: tk.Event, date_key: DateKey) -> str | None:
@@ -3431,6 +3570,7 @@ class YBSApp:
             return None
 
         self._restore_drag_selection()
+        self._queue_duration_selection_refresh(date_key)
 
         x_root = int(getattr(event, "x_root", 0))
         y_root = int(getattr(event, "y_root", 0))
@@ -3482,9 +3622,11 @@ class YBSApp:
 
         if not drag_was_active:
             self._end_drag()
+            self._queue_duration_selection_refresh(date_key)
             return None
 
         self._restore_drag_selection()
+        self._queue_duration_selection_refresh(date_key)
 
         target_info = self._detect_calendar_target(event.x_root, event.y_root)
         normalized_key: DateKey | None = None
@@ -3784,6 +3926,8 @@ class YBSApp:
                 orders_list.selection_clear(0, tk.END)
             except tk.TclError:
                 continue
+
+            self._queue_duration_selection_refresh(key)
 
     def _clear_tree_selection(self) -> None:
         """Clear the selection state for the orders tree."""
@@ -4173,6 +4317,8 @@ class YBSApp:
         for assignment in assignments:
             orders_list.insert(tk.END, self._format_assignment_label(assignment))
 
+        self._update_day_cell_duration_canvas(date_key, day_cell, assignments)
+
         try:
             day_value = int(date_key[2])
         except (TypeError, ValueError):
@@ -4185,9 +4331,422 @@ class YBSApp:
 
         day_cell.header_label.configure(text=day_text)
         self._apply_day_cell_base_style(date_key)
+        self._refresh_duration_canvas_selection(date_key)
 
     def _format_assignment_label(self, assignment: OrderRecord) -> str:
         return assignment.label()
+
+    def _get_assignment_duration(self, assignment: OrderRecord) -> float | None:
+        duration = assignment.press_time_minutes
+        if duration is not None:
+            try:
+                coerced = float(duration)
+            except (TypeError, ValueError):
+                return None
+            return max(coerced, 0.0)
+
+        speed = assignment.press_speed_per_hour
+        if speed is not None:
+            try:
+                coerced_speed = float(speed)
+            except (TypeError, ValueError):
+                return None
+            if coerced_speed > 0:
+                return round(60.0 / coerced_speed, 2)
+        return None
+
+    def _format_duration_label(self, duration: float | None) -> str:
+        if duration is None:
+            return "No duration"
+        if abs(duration - round(duration)) <= 0.05:
+            return f"{int(round(duration))} min"
+        return f"{duration:.1f} min"
+
+    def _get_listbox_row_height(self, orders_list: tk.Listbox) -> int:
+        try:
+            bbox = orders_list.bbox(0)
+        except tk.TclError:
+            bbox = None
+        if bbox and len(bbox) >= 4 and bbox[3]:
+            try:
+                return max(int(bbox[3]), 18)
+            except (TypeError, ValueError):
+                return 24
+        return 24
+
+    def _get_day_cell_row_height(self, day_cell: DayCell) -> int:
+        return self._get_listbox_row_height(day_cell.orders_list)
+
+    def _render_duration_canvas(
+        self,
+        canvas: tk.Canvas,
+        assignments: Iterable[OrderRecord],
+        *,
+        row_height: int,
+        selected_indices: Iterable[int] | None = None,
+        date_key: DateKey | None = None,
+    ) -> None:
+        assignments_list = list(assignments)
+        try:
+            canvas.update_idletasks()
+        except tk.TclError:
+            pass
+
+        padding_y = 4
+        total_height = max(len(assignments_list) * row_height + padding_y * 2, row_height)
+        try:
+            canvas.configure(height=total_height)
+        except tk.TclError:
+            return
+
+        durations = [self._get_assignment_duration(assignment) for assignment in assignments_list]
+        max_duration = max((value for value in durations if value is not None), default=0.0)
+
+        try:
+            width = int(canvas.winfo_width())
+        except tk.TclError:
+            width = 0
+        if width <= 1:
+            try:
+                width = int(canvas.winfo_reqwidth())
+            except tk.TclError:
+                width = 200
+        width = max(width, 60)
+
+        horizontal_padding = 6
+        available_width = max(width - horizontal_padding * 2, 10)
+        bar_height = max(row_height - 6, 6)
+
+        canvas.delete("duration_bar")
+        canvas.delete("duration_label")
+        canvas.delete("duration_guides")
+
+        selected_set: set[int] = set()
+        if selected_indices is not None:
+            for value in selected_indices:
+                try:
+                    selected_set.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+
+        for idx, duration in enumerate(durations):
+            top = padding_y + idx * row_height
+            bottom = top + bar_height
+            if duration is None or max_duration <= 0:
+                bar_fraction = 0.0
+            else:
+                bar_fraction = max(duration / max_duration, 0.0)
+
+            if duration and duration > 0 and max_duration > 0:
+                bar_length = max(int(bar_fraction * available_width), 6)
+            else:
+                bar_length = max(int(available_width * 0.15), 4)
+
+            left = horizontal_padding
+            right = left + bar_length
+
+            fill_color = (
+                DURATION_BAR_SELECTED_COLOR
+                if idx in selected_set
+                else (DURATION_BAR_COLOR if duration else DURATION_BAR_EMPTY_COLOR)
+            )
+
+            tags = ("duration_bar", f"index-{idx}")
+            canvas.create_rectangle(
+                left,
+                top,
+                right,
+                bottom,
+                outline="",
+                fill=fill_color,
+                tags=tags,
+            )
+
+            label = self._format_duration_label(duration)
+            label_color = (
+                DURATION_BAR_LABEL_SELECTED_COLOR
+                if idx in selected_set
+                else DURATION_BAR_LABEL_COLOR
+            )
+            label_tags = ("duration_label", f"index-{idx}")
+            canvas.create_text(
+                left,
+                top + bar_height / 2,
+                text=label,
+                anchor="w",
+                fill=label_color,
+                tags=label_tags,
+            )
+
+        try:
+            canvas.configure(scrollregion=(0, 0, width, total_height))
+        except tk.TclError:
+            pass
+
+        setattr(canvas, "_ybs_date_key", date_key)
+        setattr(canvas, "_ybs_row_height", row_height)
+        setattr(canvas, "_ybs_count", len(assignments_list))
+        setattr(canvas, "_ybs_durations", durations)
+
+    def _update_day_cell_duration_canvas(
+        self,
+        date_key: DateKey,
+        day_cell: DayCell,
+        assignments: Iterable[OrderRecord],
+    ) -> None:
+        canvas = getattr(day_cell, "duration_canvas", None)
+        if canvas is None:
+            return
+
+        row_height = self._get_day_cell_row_height(day_cell)
+        selected = set()
+        for index in day_cell.orders_list.curselection():
+            try:
+                selected.add(int(index))
+            except (TypeError, ValueError):
+                continue
+
+        self._render_duration_canvas(
+            canvas,
+            assignments,
+            row_height=row_height,
+            selected_indices=selected,
+            date_key=date_key,
+        )
+
+    def _refresh_duration_canvas_selection(self, date_key: DateKey) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        canvas = getattr(day_cell, "duration_canvas", None)
+        if canvas is None:
+            return
+
+        selected: set[int] = set()
+        for index in day_cell.orders_list.curselection():
+            try:
+                selected.add(int(index))
+            except (TypeError, ValueError):
+                continue
+
+        durations = getattr(canvas, "_ybs_durations", [])
+        for item in canvas.find_withtag("duration_bar"):
+            tags = canvas.gettags(item)
+            index: int | None = None
+            for tag in tags:
+                if tag.startswith("index-"):
+                    try:
+                        index = int(tag.split("-", 1)[1])
+                    except (TypeError, ValueError):
+                        index = None
+                    break
+            if index is None:
+                continue
+            duration = None
+            if 0 <= index < len(durations):
+                duration = durations[index]
+            color = (
+                DURATION_BAR_SELECTED_COLOR
+                if index in selected
+                else (DURATION_BAR_COLOR if duration else DURATION_BAR_EMPTY_COLOR)
+            )
+            canvas.itemconfigure(item, fill=color)
+
+            for label_item in canvas.find_withtag(f"index-{index}"):
+                if "duration_label" not in canvas.gettags(label_item):
+                    continue
+                label_color = (
+                    DURATION_BAR_LABEL_SELECTED_COLOR
+                    if index in selected
+                    else DURATION_BAR_LABEL_COLOR
+                )
+                canvas.itemconfigure(label_item, fill=label_color)
+
+    def _schedule_duration_canvas_redraw(
+        self, date_key: DateKey, canvas: tk.Canvas | None, *, delay: int = 20
+    ) -> None:
+        if canvas is None:
+            return
+
+        after_id = getattr(canvas, "_ybs_redraw_after", None)
+        if after_id:
+            try:
+                canvas.after_cancel(after_id)
+            except tk.TclError:
+                pass
+
+        def redraw() -> None:
+            setattr(canvas, "_ybs_redraw_after", None)
+            day_cell = self._day_cells.get(date_key)
+            if not day_cell:
+                return
+            assignments = self._calendar_assignments.get(date_key, [])
+            self._update_day_cell_duration_canvas(date_key, day_cell, assignments)
+            self._refresh_duration_canvas_selection(date_key)
+
+        try:
+            after_id = canvas.after(delay, redraw)
+        except tk.TclError:
+            return
+        setattr(canvas, "_ybs_redraw_after", after_id)
+
+    def _queue_duration_selection_refresh(self, date_key: DateKey) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        canvas = getattr(day_cell, "duration_canvas", None)
+        if canvas is None:
+            return
+
+        after_id = getattr(canvas, "_ybs_selection_after", None)
+        if after_id:
+            try:
+                canvas.after_cancel(after_id)
+            except tk.TclError:
+                pass
+
+        def refresh() -> None:
+            setattr(canvas, "_ybs_selection_after", None)
+            self._refresh_duration_canvas_selection(date_key)
+
+        try:
+            after_id = canvas.after(10, refresh)
+        except tk.TclError:
+            return
+        setattr(canvas, "_ybs_selection_after", after_id)
+
+    def _on_duration_canvas_configure(self, event: tk.Event, date_key: DateKey) -> None:
+        canvas = getattr(event, "widget", None)
+        if not isinstance(canvas, tk.Canvas):
+            return
+        self._schedule_duration_canvas_redraw(date_key, canvas)
+
+    def _canvas_index_from_event(
+        self, canvas: tk.Canvas, event: tk.Event | None
+    ) -> int | None:
+        index: int | None = None
+
+        try:
+            current_items = canvas.find_withtag("current")
+        except tk.TclError:
+            current_items = ()
+
+        for item in current_items:
+            tags = canvas.gettags(item)
+            for tag in tags:
+                if tag.startswith("index-"):
+                    try:
+                        index = int(tag.split("-", 1)[1])
+                    except (TypeError, ValueError):
+                        index = None
+                    break
+            if index is not None:
+                break
+
+        if index is None:
+            row_height = getattr(canvas, "_ybs_row_height", 24)
+            try:
+                y = int(getattr(event, "y", 0))
+            except (TypeError, ValueError):
+                y = 0
+            if row_height <= 0:
+                return None
+            index = max(y, 0) // row_height
+
+        count = getattr(canvas, "_ybs_count", None)
+        if isinstance(count, int) and count >= 0:
+            if index < 0 or index >= count:
+                return None
+
+        return index
+
+    def _trigger_orders_list_event(
+        self,
+        date_key: DateKey,
+        sequence: str,
+        index: int,
+        *,
+        state: int | None = None,
+    ) -> None:
+        day_cell = self._day_cells.get(date_key)
+        if not day_cell:
+            return
+
+        orders_list = day_cell.orders_list
+        if orders_list is None:
+            return
+
+        try:
+            bbox = orders_list.bbox(index)
+        except tk.TclError:
+            bbox = None
+
+        if bbox and len(bbox) >= 4:
+            y_coord = bbox[1] + max(int(bbox[3] / 2), 1)
+        else:
+            row_height = self._get_day_cell_row_height(day_cell)
+            y_coord = index * row_height + max(row_height // 2, 1)
+
+        event_kwargs: dict[str, int] = {"x": 5, "y": max(int(y_coord), 1)}
+        if state is not None:
+            try:
+                event_kwargs["state"] = int(state)
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            orders_list.event_generate(sequence, **event_kwargs)
+        except tk.TclError:
+            return
+
+        try:
+            orders_list.focus_set()
+        except tk.TclError:
+            pass
+
+    def _on_duration_canvas_press(self, event: tk.Event, date_key: DateKey) -> str | None:
+        canvas = getattr(event, "widget", None)
+        if not isinstance(canvas, tk.Canvas):
+            return None
+
+        index = self._canvas_index_from_event(canvas, event)
+        if index is None:
+            return "break"
+
+        state = getattr(event, "state", None)
+        self._trigger_orders_list_event(date_key, "<ButtonPress-1>", index, state=state)
+        self._queue_duration_selection_refresh(date_key)
+        return "break"
+
+    def _on_duration_canvas_drag(self, event: tk.Event, date_key: DateKey) -> str | None:
+        canvas = getattr(event, "widget", None)
+        if not isinstance(canvas, tk.Canvas):
+            return None
+
+        index = self._canvas_index_from_event(canvas, event)
+        if index is None:
+            return "break"
+
+        state = getattr(event, "state", None)
+        self._trigger_orders_list_event(date_key, "<B1-Motion>", index, state=state)
+        self._queue_duration_selection_refresh(date_key)
+        return "break"
+
+    def _on_duration_canvas_release(self, event: tk.Event, date_key: DateKey) -> str | None:
+        canvas = getattr(event, "widget", None)
+        if not isinstance(canvas, tk.Canvas):
+            return None
+
+        index = self._canvas_index_from_event(canvas, event)
+        if index is None:
+            return "break"
+
+        state = getattr(event, "state", None)
+        self._trigger_orders_list_event(date_key, "<ButtonRelease-1>", index, state=state)
+        self._queue_duration_selection_refresh(date_key)
+        return "break"
 
     def _format_date_label(self, date_key: DateKey) -> str:
         try:
