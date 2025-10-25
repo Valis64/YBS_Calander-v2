@@ -47,6 +47,14 @@ DURATION_BAR_EMPTY_COLOR = "#1b3f6a"
 DURATION_BAR_LABEL_COLOR = "#a8bedc"
 DURATION_BAR_LABEL_SELECTED_COLOR = TEXT_COLOR
 
+PRESS_MODELS: dict[str, dict[str, float | int]] = {
+    "WS4600": {"min_colors": 4, "max_repeat": 25.0, "constant": 42.0},
+    "6X00": {"min_colors": 6, "max_repeat": 26.0, "constant": 38.0},
+    "7X00": {"min_colors": 7, "max_repeat": 30.0, "constant": 36.0},
+    "20X00": {"min_colors": 8, "max_repeat": 36.0, "constant": 34.0},
+}
+DEFAULT_PRESS_MODEL = next(iter(PRESS_MODELS))
+
 APP_NAME = "YBS Print Calander"
 APP_TITLE = f"{APP_NAME} v{__version__}"
 ABOUT_TITLE = f"About {APP_NAME}"
@@ -246,13 +254,17 @@ class PressCalculatorDialog:
             wraplength=420,
             justify="left",
         )
-        instructions.grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 15))
+        instructions.grid(row=0, column=0, columnspan=7, sticky="w", pady=(0, 15))
+
+        self._model_names: tuple[str, ...] = tuple(PRESS_MODELS.keys())
 
         headers = [
             "Order",
+            "Press",
             "Colors",
             "Repeat (in)",
-            "Speed (/hr)",
+            "Ft/min",
+            "m/min",
             "Duration (min)",
         ]
         for column, header in enumerate(headers):
@@ -262,13 +274,16 @@ class PressCalculatorDialog:
 
         current_row = 2
         for index, order in enumerate(self._orders):
+            model_default = order.press_model if order.press_model in PRESS_MODELS else None
+            model_var = tk.StringVar(value=model_default or DEFAULT_PRESS_MODEL)
             color_var = tk.StringVar(
                 value="" if order.color_count is None else str(order.color_count)
             )
             repeat_var = tk.StringVar(
                 value=self._format_float(order.repeat_length)
             )
-            speed_var = tk.StringVar(value="")
+            feet_var = tk.StringVar(value=self._format_float(order.press_speed_ft_min))
+            meter_var = tk.StringVar(value=self._format_float(order.press_speed_m_min))
             duration_var = tk.StringVar(value="")
 
             description = ttk.Label(
@@ -280,19 +295,37 @@ class PressCalculatorDialog:
             )
             description.grid(row=current_row, column=0, sticky="w", pady=(0, 8))
 
+            model_combo = ttk.Combobox(
+                content,
+                textvariable=model_var,
+                values=self._model_names,
+                state="readonly",
+                width=8,
+                justify="center",
+            )
+            model_combo.grid(row=current_row, column=1, sticky="e", pady=(0, 8))
+
             color_entry = ttk.Entry(content, textvariable=color_var, width=6, justify="center")
-            color_entry.grid(row=current_row, column=1, sticky="e", pady=(0, 8))
+            color_entry.grid(row=current_row, column=2, sticky="e", pady=(0, 8))
 
             repeat_entry = ttk.Entry(content, textvariable=repeat_var, width=10, justify="center")
-            repeat_entry.grid(row=current_row, column=2, sticky="e", pady=(0, 8))
+            repeat_entry.grid(row=current_row, column=3, sticky="e", pady=(0, 8))
 
-            speed_label = ttk.Label(
+            feet_label = ttk.Label(
                 content,
-                textvariable=speed_var,
+                textvariable=feet_var,
                 style="Dark.TLabel",
                 anchor="e",
             )
-            speed_label.grid(row=current_row, column=3, sticky="e", pady=(0, 8))
+            feet_label.grid(row=current_row, column=4, sticky="e", pady=(0, 8))
+
+            meter_label = ttk.Label(
+                content,
+                textvariable=meter_var,
+                style="Dark.TLabel",
+                anchor="e",
+            )
+            meter_label.grid(row=current_row, column=5, sticky="e", pady=(0, 8))
 
             duration_label = ttk.Label(
                 content,
@@ -300,12 +333,15 @@ class PressCalculatorDialog:
                 style="Dark.TLabel",
                 anchor="e",
             )
-            duration_label.grid(row=current_row, column=4, sticky="e", pady=(0, 8))
+            duration_label.grid(row=current_row, column=6, sticky="e", pady=(0, 8))
 
             row_info = {
+                "model_var": model_var,
+                "model_combo": model_combo,
                 "color_var": color_var,
                 "repeat_var": repeat_var,
-                "speed_var": speed_var,
+                "feet_var": feet_var,
+                "meter_var": meter_var,
                 "duration_var": duration_var,
                 "color_entry": color_entry,
                 "repeat_entry": repeat_entry,
@@ -313,6 +349,9 @@ class PressCalculatorDialog:
             }
             self._rows.append(row_info)
 
+            model_var.trace_add(
+                "write", lambda *_args, idx=index: self._update_row(idx)
+            )
             color_var.trace_add(
                 "write", lambda *_args, idx=index: self._update_row(idx)
             )
@@ -331,10 +370,10 @@ class PressCalculatorDialog:
             wraplength=420,
             justify="left",
         )
-        error_label.grid(row=current_row, column=0, columnspan=5, sticky="w")
+        error_label.grid(row=current_row, column=0, columnspan=7, sticky="w")
 
         button_frame = ttk.Frame(content, style="Dark.TFrame")
-        button_frame.grid(row=current_row + 1, column=0, columnspan=5, sticky="e", pady=(15, 0))
+        button_frame.grid(row=current_row + 1, column=0, columnspan=7, sticky="e", pady=(15, 0))
 
         cancel_button = ttk.Button(
             button_frame,
@@ -353,7 +392,7 @@ class PressCalculatorDialog:
         submit_button.grid(row=0, column=1)
 
         content.columnconfigure(0, weight=1)
-        for column_index in range(1, 5):
+        for column_index in range(1, 7):
             content.columnconfigure(column_index, weight=0)
 
     def show(self) -> Optional[List[OrderRecord]]:
@@ -436,6 +475,9 @@ class PressCalculatorDialog:
         self._set_error("")
 
         for row in self._rows:
+            model_name = row["model_var"].get().strip() or DEFAULT_PRESS_MODEL
+            if model_name not in PRESS_MODELS:
+                model_name = DEFAULT_PRESS_MODEL
             color_text = row["color_var"].get()
             repeat_text = row["repeat_var"].get()
 
@@ -449,7 +491,12 @@ class PressCalculatorDialog:
                 self._handle_invalid(row["repeat_entry"], "Please enter a valid repeat length.")
                 return
 
-            metrics = self._compute_metrics(color_value, repeat_value)
+            try:
+                metrics = self._compute_metrics(model_name, color_value, repeat_value)
+            except ValueError as exc:
+                self._handle_invalid(row["repeat_entry"], str(exc))
+                return
+
             if metrics is None or metrics[0] <= 0:
                 self._handle_invalid(
                     row["repeat_entry"],
@@ -458,13 +505,16 @@ class PressCalculatorDialog:
                 return
 
             order_copy = row["order"].copy()
+            order_copy.press_model = model_name
             order_copy.color_count = color_value
             order_copy.repeat_length = repeat_value
             order_copy.press_time_minutes = round(metrics[0], 2)
-            if metrics[1] is not None:
-                order_copy.press_speed_per_hour = round(metrics[1], 2)
-            else:
-                order_copy.press_speed_per_hour = None
+            order_copy.press_speed_ft_min = (
+                round(metrics[1], 2) if metrics[1] is not None else None
+            )
+            order_copy.press_speed_m_min = (
+                round(metrics[2], 2) if metrics[2] is not None else None
+            )
             results.append(order_copy)
 
         self.result = results
@@ -493,18 +543,33 @@ class PressCalculatorDialog:
             return
 
         row = self._rows[index]
+        model_name = row["model_var"].get().strip() or DEFAULT_PRESS_MODEL
+        if model_name not in PRESS_MODELS:
+            model_name = DEFAULT_PRESS_MODEL
         color_value = self._coerce_int(row["color_var"].get())
         repeat_value = self._coerce_float(row["repeat_var"].get())
-        metrics = self._compute_metrics(color_value, repeat_value)
+        try:
+            metrics = self._compute_metrics(model_name, color_value, repeat_value)
+        except ValueError as exc:
+            row["duration_var"].set("")
+            row["feet_var"].set("")
+            row["meter_var"].set("")
+            self._set_error(str(exc))
+            return
 
         if metrics is None or metrics[0] <= 0:
-            row["speed_var"].set("")
+            row["feet_var"].set("")
+            row["meter_var"].set("")
             row["duration_var"].set("")
         else:
             duration_display = self._format_number(metrics[0])
-            speed_display = self._format_number(metrics[1]) if metrics[1] is not None else ""
+            feet_display = self._format_number(metrics[1]) if metrics[1] is not None else ""
+            meter_display = self._format_number(metrics[2]) if metrics[2] is not None else ""
             row["duration_var"].set(duration_display)
-            row["speed_var"].set(speed_display)
+            row["feet_var"].set(feet_display)
+            row["meter_var"].set(meter_display)
+            if self._error_var.get():
+                self._set_error("")
 
     def _format_float(self, value: float | None) -> str:
         if value is None:
@@ -520,19 +585,51 @@ class PressCalculatorDialog:
         return f"{rounded:.2f}".rstrip("0").rstrip(".")
 
     def _compute_metrics(
-        self, color_count: Optional[int], repeat_length: Optional[float]
-    ) -> Optional[Tuple[float, Optional[float]]]:
+        self,
+        model_name: str,
+        color_count: Optional[int],
+        repeat_length: Optional[float],
+    ) -> Optional[Tuple[float, Optional[float], Optional[float]]]:
         if color_count is None or repeat_length is None:
             return None
 
-        color_component = max(color_count, 0) * 5.0
-        repeat_component = max(repeat_length, 0.0) * 0.25
-        total_minutes = color_component + repeat_component
-        if total_minutes <= 0:
-            return (total_minutes, None)
+        model = PRESS_MODELS.get(model_name)
+        if model is None:
+            return None
 
-        speed = 60.0 / total_minutes if total_minutes > 0 else None
-        return (total_minutes, speed)
+        max_repeat = float(model.get("max_repeat", 0))
+        if repeat_length > max_repeat > 0:
+            formatted_max = f"{max_repeat:g}" if max_repeat % 1 else f"{int(max_repeat)}"
+            raise ValueError(
+                f"Repeat length cannot exceed {formatted_max}\" for {model_name}."
+            )
+
+        min_colors = int(model.get("min_colors", 0))
+        constant = float(model.get("constant", 0.0))
+
+        clamped_colors = max(min_colors, color_count if color_count is not None else 0)
+        clamped_colors = max(clamped_colors, 0)
+
+        if constant <= 0 or clamped_colors <= 0:
+            duration_minutes = 0.0
+            feet_per_minute = 0.0
+        else:
+            seconds_per_cycle = clamped_colors * constant
+            duration_minutes = seconds_per_cycle / 60.0
+
+            feet_per_repeat = max(repeat_length, 0.0) / 12.0
+            if feet_per_repeat <= 0:
+                feet_per_minute = 0.0
+            else:
+                feet_per_minute = (feet_per_repeat / seconds_per_cycle) * 60.0
+
+        meters_per_minute: float | None
+        if feet_per_minute:
+            meters_per_minute = feet_per_minute / 3.28084
+        else:
+            meters_per_minute = 0.0 if feet_per_minute == 0 else None
+
+        return (duration_minutes, feet_per_minute, meters_per_minute)
 
     @staticmethod
     def _coerce_int(value: str) -> Optional[int]:
@@ -3993,12 +4090,16 @@ class YBSApp:
             for index, existing in enumerate(self._all_orders):
                 if existing == record:
                     merged = existing.merge_metadata(record)
-                    if (
-                        existing.color_count != merged.color_count
-                        or existing.repeat_length != merged.repeat_length
-                        or existing.press_time_minutes != merged.press_time_minutes
-                        or getattr(existing, "press_speed_per_hour", None)
-                        != getattr(merged, "press_speed_per_hour", None)
+                    if any(
+                        getattr(existing, attr, None) != getattr(merged, attr, None)
+                        for attr in (
+                            "color_count",
+                            "repeat_length",
+                            "press_time_minutes",
+                            "press_model",
+                            "press_speed_ft_min",
+                            "press_speed_m_min",
+                        )
                     ):
                         self._all_orders[index] = merged
                         updated = True
@@ -4344,15 +4445,6 @@ class YBSApp:
             except (TypeError, ValueError):
                 return None
             return max(coerced, 0.0)
-
-        speed = assignment.press_speed_per_hour
-        if speed is not None:
-            try:
-                coerced_speed = float(speed)
-            except (TypeError, ValueError):
-                return None
-            if coerced_speed > 0:
-                return round(60.0 / coerced_speed, 2)
         return None
 
     def _format_duration_label(self, duration: float | None) -> str:
