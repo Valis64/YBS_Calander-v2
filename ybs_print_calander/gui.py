@@ -15,7 +15,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import __version__
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
@@ -207,6 +207,361 @@ class HoverTooltip:
         except tk.TclError:
             pass
 
+
+class PressCalculatorDialog:
+    """Modal dialog responsible for collecting press calculation inputs."""
+
+    def __init__(self, parent: tk.Misc, orders: Iterable[OrderRecord]) -> None:
+        self._parent = parent
+        self._orders: List[OrderRecord] = [order.copy() for order in orders]
+        self._rows: list[dict[str, Any]] = []
+        self._error_var = tk.StringVar(value="")
+        self.result: Optional[List[OrderRecord]] = None
+
+        self.window = tk.Toplevel(parent)
+        self.window.withdraw()
+        self.window.title("Press Calculator")
+        self.window.configure(bg=BACKGROUND_COLOR)
+        self.window.transient(parent)
+        self.window.resizable(False, False)
+        self.window.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.window.bind("<Return>", self._on_submit_event)
+        self.window.bind("<Escape>", self._on_cancel_event)
+
+        content = ttk.Frame(self.window, style="Dark.TFrame", padding=20)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        instructions = ttk.Label(
+            content,
+            text=(
+                "Provide the color count and repeat length for each order."
+                " Press speed and run time are calculated automatically."
+            ),
+            style="Dark.TLabel",
+            wraplength=420,
+            justify="left",
+        )
+        instructions.grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 15))
+
+        headers = [
+            "Order",
+            "Colors",
+            "Repeat (in)",
+            "Speed (/hr)",
+            "Duration (min)",
+        ]
+        for column, header in enumerate(headers):
+            label = ttk.Label(content, text=header, style="Dark.TLabel")
+            sticky = "w" if column == 0 else "e"
+            label.grid(row=1, column=column, sticky=sticky, padx=(0, 10))
+
+        current_row = 2
+        for index, order in enumerate(self._orders):
+            color_var = tk.StringVar(
+                value="" if order.color_count is None else str(order.color_count)
+            )
+            repeat_var = tk.StringVar(
+                value=self._format_float(order.repeat_length)
+            )
+            speed_var = tk.StringVar(value="")
+            duration_var = tk.StringVar(value="")
+
+            description = ttk.Label(
+                content,
+                text=order.label(),
+                style="Dark.TLabel",
+                wraplength=260,
+                justify="left",
+            )
+            description.grid(row=current_row, column=0, sticky="w", pady=(0, 8))
+
+            color_entry = ttk.Entry(content, textvariable=color_var, width=6, justify="center")
+            color_entry.grid(row=current_row, column=1, sticky="e", pady=(0, 8))
+
+            repeat_entry = ttk.Entry(content, textvariable=repeat_var, width=10, justify="center")
+            repeat_entry.grid(row=current_row, column=2, sticky="e", pady=(0, 8))
+
+            speed_label = ttk.Label(
+                content,
+                textvariable=speed_var,
+                style="Dark.TLabel",
+                anchor="e",
+            )
+            speed_label.grid(row=current_row, column=3, sticky="e", pady=(0, 8))
+
+            duration_label = ttk.Label(
+                content,
+                textvariable=duration_var,
+                style="Dark.TLabel",
+                anchor="e",
+            )
+            duration_label.grid(row=current_row, column=4, sticky="e", pady=(0, 8))
+
+            row_info = {
+                "color_var": color_var,
+                "repeat_var": repeat_var,
+                "speed_var": speed_var,
+                "duration_var": duration_var,
+                "color_entry": color_entry,
+                "repeat_entry": repeat_entry,
+                "order": order,
+            }
+            self._rows.append(row_info)
+
+            color_var.trace_add(
+                "write", lambda *_args, idx=index: self._update_row(idx)
+            )
+            repeat_var.trace_add(
+                "write", lambda *_args, idx=index: self._update_row(idx)
+            )
+
+            self._update_row(index)
+            current_row += 1
+
+        error_label = tk.Label(
+            content,
+            textvariable=self._error_var,
+            fg=FAIL_COLOR,
+            bg=BACKGROUND_COLOR,
+            wraplength=420,
+            justify="left",
+        )
+        error_label.grid(row=current_row, column=0, columnspan=5, sticky="w")
+
+        button_frame = ttk.Frame(content, style="Dark.TFrame")
+        button_frame.grid(row=current_row + 1, column=0, columnspan=5, sticky="e", pady=(15, 0))
+
+        cancel_button = ttk.Button(
+            button_frame,
+            text="Cancel",
+            style="Dark.TButton",
+            command=self._on_cancel,
+        )
+        cancel_button.grid(row=0, column=0, padx=(0, 10))
+
+        submit_button = ttk.Button(
+            button_frame,
+            text="Apply",
+            style="Dark.TButton",
+            command=self._on_submit,
+        )
+        submit_button.grid(row=0, column=1)
+
+        content.columnconfigure(0, weight=1)
+        for column_index in range(1, 5):
+            content.columnconfigure(column_index, weight=0)
+
+    def show(self) -> Optional[List[OrderRecord]]:
+        try:
+            self.window.deiconify()
+            self.window.update_idletasks()
+            self._center()
+            self.window.grab_set()
+            self.window.focus_set()
+        except tk.TclError:
+            pass
+
+        try:
+            self.window.wait_window()
+        except tk.TclError:
+            pass
+
+        return self.result
+
+    def _center(self) -> None:
+        try:
+            parent = self._parent
+            parent.update_idletasks()
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            pw = parent.winfo_width()
+            ph = parent.winfo_height()
+        except tk.TclError:
+            px = py = 0
+            pw = ph = 0
+
+        try:
+            width = self.window.winfo_width()
+            height = self.window.winfo_height()
+        except tk.TclError:
+            width = height = 0
+
+        if width <= 1:
+            try:
+                width = self.window.winfo_reqwidth()
+            except (tk.TclError, ValueError):
+                width = 400
+
+        if height <= 1:
+            try:
+                height = self.window.winfo_reqheight()
+            except (tk.TclError, ValueError):
+                height = 200
+
+        target_x = px + (pw - width) // 2 if pw else px + 40
+        target_y = py + (ph - height) // 2 if ph else py + 40
+
+        try:
+            self.window.geometry(f"+{max(target_x, 0)}+{max(target_y, 0)}")
+        except tk.TclError:
+            pass
+
+    def _set_error(self, message: str) -> None:
+        self._error_var.set(message)
+        if message:
+            try:
+                self.window.bell()
+            except tk.TclError:
+                pass
+
+    def _on_cancel_event(self, event: tk.Event) -> str | None:
+        self._on_cancel()
+        return "break"
+
+    def _on_submit_event(self, event: tk.Event) -> str | None:
+        self._on_submit()
+        return "break"
+
+    def _on_cancel(self) -> None:
+        self.result = None
+        self._close()
+
+    def _on_submit(self) -> None:
+        results: List[OrderRecord] = []
+        self._set_error("")
+
+        for row in self._rows:
+            color_text = row["color_var"].get()
+            repeat_text = row["repeat_var"].get()
+
+            color_value = self._strict_int(color_text)
+            if color_value is None:
+                self._handle_invalid(row["color_entry"], "Please enter a valid color count.")
+                return
+
+            repeat_value = self._strict_float(repeat_text)
+            if repeat_value is None:
+                self._handle_invalid(row["repeat_entry"], "Please enter a valid repeat length.")
+                return
+
+            metrics = self._compute_metrics(color_value, repeat_value)
+            if metrics is None or metrics[0] <= 0:
+                self._handle_invalid(
+                    row["repeat_entry"],
+                    "Inputs must yield a positive run time.",
+                )
+                return
+
+            order_copy = row["order"].copy()
+            order_copy.color_count = color_value
+            order_copy.repeat_length = repeat_value
+            order_copy.press_time_minutes = round(metrics[0], 2)
+            if metrics[1] is not None:
+                order_copy.press_speed_per_hour = round(metrics[1], 2)
+            else:
+                order_copy.press_speed_per_hour = None
+            results.append(order_copy)
+
+        self.result = results
+        self._close()
+
+    def _handle_invalid(self, widget: tk.Widget, message: str) -> None:
+        self._set_error(message)
+        try:
+            widget.focus_set()
+            widget.selection_range(0, tk.END)
+        except tk.TclError:
+            pass
+
+    def _close(self) -> None:
+        try:
+            self.window.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            pass
+
+    def _update_row(self, index: int) -> None:
+        if not (0 <= index < len(self._rows)):
+            return
+
+        row = self._rows[index]
+        color_value = self._coerce_int(row["color_var"].get())
+        repeat_value = self._coerce_float(row["repeat_var"].get())
+        metrics = self._compute_metrics(color_value, repeat_value)
+
+        if metrics is None or metrics[0] <= 0:
+            row["speed_var"].set("")
+            row["duration_var"].set("")
+        else:
+            duration_display = self._format_number(metrics[0])
+            speed_display = self._format_number(metrics[1]) if metrics[1] is not None else ""
+            row["duration_var"].set(duration_display)
+            row["speed_var"].set(speed_display)
+
+    def _format_float(self, value: float | None) -> str:
+        if value is None:
+            return ""
+        return self._format_number(value)
+
+    def _format_number(self, value: float | None) -> str:
+        if value is None:
+            return ""
+        rounded = round(value, 2)
+        if abs(rounded - round(rounded)) < 0.01:
+            return str(int(round(rounded)))
+        return f"{rounded:.2f}".rstrip("0").rstrip(".")
+
+    def _compute_metrics(
+        self, color_count: Optional[int], repeat_length: Optional[float]
+    ) -> Optional[Tuple[float, Optional[float]]]:
+        if color_count is None or repeat_length is None:
+            return None
+
+        color_component = max(color_count, 0) * 5.0
+        repeat_component = max(repeat_length, 0.0) * 0.25
+        total_minutes = color_component + repeat_component
+        if total_minutes <= 0:
+            return (total_minutes, None)
+
+        speed = 60.0 / total_minutes if total_minutes > 0 else None
+        return (total_minutes, speed)
+
+    @staticmethod
+    def _coerce_int(value: str) -> Optional[int]:
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = int(text)
+        except ValueError:
+            return None
+        if parsed < 0:
+            return None
+        return parsed
+
+    @staticmethod
+    def _coerce_float(value: str) -> Optional[float]:
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = float(text)
+        except ValueError:
+            return None
+        if parsed < 0:
+            return None
+        return parsed
+
+    def _strict_int(self, value: str) -> Optional[int]:
+        parsed = self._coerce_int(value)
+        return parsed
+
+    def _strict_float(self, value: str) -> Optional[float]:
+        parsed = self._coerce_float(value)
+        return parsed
 
 @dataclass
 class DayCell:
@@ -2794,16 +3149,41 @@ class YBSApp:
                 normalized_orders = tuple(
                     self._normalize_assignment(order) for order in raw_orders
                 )
-                target_label = self._format_date_label(normalized_key)
-                message = self._format_assignment_move_message(
-                    normalized_orders, target_label
+                calculator_orders = self._prompt_press_calculations(
+                    normalized_orders
                 )
-                payload: dict[str, object] = {
-                    "date_key": normalized_key,
-                    "orders": normalized_orders,
-                    "source_kind": "tree",
-                }
-                self._queue.put(("calendar_drop", True, message, payload))
+                if calculator_orders is None:
+                    self._queue.put(
+                        (
+                            "calendar_drop",
+                            False,
+                            "Assignment cancelled before scheduling.",
+                            None,
+                        )
+                    )
+                elif not calculator_orders:
+                    self._queue.put(
+                        (
+                            "calendar_drop",
+                            False,
+                            "Unable to schedule the selected orders.",
+                            None,
+                        )
+                    )
+                else:
+                    target_label = self._format_date_label(normalized_key)
+                    message = self._format_assignment_move_message(
+                        calculator_orders, target_label
+                    )
+                    payload: dict[str, object] = {
+                        "date_key": normalized_key,
+                        "orders": calculator_orders,
+                        "source_kind": "tree",
+                        "calculator_output": tuple(
+                            order.to_dict() for order in calculator_orders
+                        ),
+                    }
+                    self._queue.put(("calendar_drop", True, message, payload))
         else:
             self._queue.put(
                 (
@@ -3445,6 +3825,47 @@ class YBSApp:
         self._remove_calendar_hover()
         self._reset_drag_state()
 
+    def _prompt_press_calculations(
+        self, orders: Iterable[OrderRecord]
+    ) -> Optional[Tuple[OrderRecord, ...]]:
+        order_list = [self._normalize_assignment(order) for order in orders]
+        if not order_list:
+            return tuple()
+
+        dialog = PressCalculatorDialog(self.root, order_list)
+        result = dialog.show()
+        if result is None:
+            return None
+
+        normalized_result = [self._normalize_assignment(order) for order in result]
+        return tuple(normalized_result)
+
+    def _record_calculator_metadata(self, orders: Iterable[OrderRecord]) -> None:
+        updated = False
+        for record in orders:
+            if not isinstance(record, OrderRecord):
+                continue
+
+            for index, existing in enumerate(self._all_orders):
+                if existing == record:
+                    merged = existing.merge_metadata(record)
+                    if (
+                        existing.color_count != merged.color_count
+                        or existing.repeat_length != merged.repeat_length
+                        or existing.press_time_minutes != merged.press_time_minutes
+                        or getattr(existing, "press_speed_per_hour", None)
+                        != getattr(merged, "press_speed_per_hour", None)
+                    ):
+                        self._all_orders[index] = merged
+                        updated = True
+                    break
+            else:
+                self._all_orders.append(record.copy())
+                updated = True
+
+        if updated:
+            self._refresh_tree_drag_selection()
+
     def _handle_calendar_drop(self, success: bool, message: str, payload: object | None) -> None:
         color = SUCCESS_COLOR if success else FAIL_COLOR
         self._set_status(color, message)
@@ -3474,6 +3895,8 @@ class YBSApp:
         ]
         if not normalized_orders:
             return
+
+        self._record_calculator_metadata(normalized_orders)
 
         source_kind = payload.get("source_kind")
         clear_tree_after_drop = (

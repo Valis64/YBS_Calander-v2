@@ -49,7 +49,9 @@ class OrderRecord:
     The record now captures additional scheduling metadata used by the GUI when
     placing jobs onto the calendar.  ``color_count`` reflects the number of
     colors in the job, ``repeat_length`` stores the repeat length (in inches),
-    and ``press_time_minutes`` stores a computed or user-specified press time.
+    ``press_time_minutes`` stores a computed or user-specified press time, and
+    ``press_speed_per_hour`` tracks the estimated hourly throughput produced by
+    the calculator dialog.
     """
 
     order_number: str
@@ -57,6 +59,7 @@ class OrderRecord:
     color_count: int | None = None
     repeat_length: float | None = None
     press_time_minutes: float | None = None
+    press_speed_per_hour: float | None = None
 
     def __post_init__(self) -> None:
         self.order_number = str(self.order_number or "").strip()
@@ -73,6 +76,12 @@ class OrderRecord:
         if self.press_time_minutes is not None:
             coerced = _coerce_float(self.press_time_minutes)
             self.press_time_minutes = coerced if coerced is not None else None
+
+        if self.press_speed_per_hour is not None:
+            coerced = _coerce_float(self.press_speed_per_hour)
+            self.press_speed_per_hour = coerced if coerced is not None else None
+        elif self.press_time_minutes is not None and self.press_time_minutes > 0:
+            self.press_speed_per_hour = round(60.0 / self.press_time_minutes, 2)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, OrderRecord):
@@ -92,6 +101,7 @@ class OrderRecord:
             color_count=self.color_count,
             repeat_length=self.repeat_length,
             press_time_minutes=self.press_time_minutes,
+            press_speed_per_hour=self.press_speed_per_hour,
         )
 
     def merge_metadata(self, other: "OrderRecord") -> "OrderRecord":
@@ -108,6 +118,11 @@ class OrderRecord:
                 other.press_time_minutes
                 if other.press_time_minutes is not None
                 else self.press_time_minutes
+            ),
+            press_speed_per_hour=(
+                other.press_speed_per_hour
+                if other.press_speed_per_hour is not None
+                else self.press_speed_per_hour
             ),
         )
 
@@ -127,6 +142,13 @@ class OrderRecord:
                 else f"{int(round(self.press_time_minutes))}"
             )
             parts.append(f"{minutes} min")
+        if self.press_speed_per_hour is not None:
+            speed = (
+                f"{self.press_speed_per_hour:.1f}"
+                if abs(self.press_speed_per_hour - round(self.press_speed_per_hour)) > 0.05
+                else f"{int(round(self.press_speed_per_hour))}"
+            )
+            parts.append(f"{speed}/hr")
         return ", ".join(parts)
 
     def label(self) -> str:
@@ -170,10 +192,13 @@ class OrderRecord:
             repeat_component = max(0.0, repeat_minutes_factor) * max(self.repeat_length, 0.0)
 
         estimated = color_setup + repeat_component
-        if estimated == 0.0:
+        if estimated <= 0.0:
+            self.press_time_minutes = None
+            self.press_speed_per_hour = None
             return None
 
         self.press_time_minutes = round(estimated, 2)
+        self.press_speed_per_hour = round(60.0 / estimated, 2) if estimated > 0 else None
         return self.press_time_minutes
 
     def to_dict(self) -> dict[str, object]:
@@ -187,6 +212,8 @@ class OrderRecord:
             data["repeat_length"] = self.repeat_length
         if self.press_time_minutes is not None:
             data["press_time_minutes"] = self.press_time_minutes
+        if self.press_speed_per_hour is not None:
+            data["press_speed_per_hour"] = self.press_speed_per_hour
         return data
 
     @classmethod
@@ -196,12 +223,14 @@ class OrderRecord:
         color_count = _coerce_int(payload.get("color_count"))
         repeat_length = _coerce_float(payload.get("repeat_length"))
         press_time = _coerce_float(payload.get("press_time_minutes"))
+        press_speed = _coerce_float(payload.get("press_speed_per_hour"))
         return cls(
             order_number=str(order_number or ""),
             company=str(company or ""),
             color_count=color_count,
             repeat_length=repeat_length,
             press_time_minutes=press_time,
+            press_speed_per_hour=press_speed,
         )
 
     @classmethod
@@ -226,6 +255,7 @@ class OrderRecord:
         color_count = _coerce_int(sequence[2]) if len(sequence) > 2 else None
         repeat_length = _coerce_float(sequence[3]) if len(sequence) > 3 else None
         press_time = _coerce_float(sequence[4]) if len(sequence) > 4 else None
+        press_speed = _coerce_float(sequence[5]) if len(sequence) > 5 else None
 
         return cls(
             order_number=order_number,
@@ -233,6 +263,7 @@ class OrderRecord:
             color_count=color_count,
             repeat_length=repeat_length,
             press_time_minutes=press_time,
+            press_speed_per_hour=press_speed,
         )
 
 
