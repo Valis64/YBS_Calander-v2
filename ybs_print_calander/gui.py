@@ -47,11 +47,21 @@ DURATION_BAR_EMPTY_COLOR = "#1b3f6a"
 DURATION_BAR_LABEL_COLOR = "#a8bedc"
 DURATION_BAR_LABEL_SELECTED_COLOR = TEXT_COLOR
 
+#
+# NOTE:  The spreadsheet provided by YBS calculates press speeds for each
+# machine using a common structure:
+#
+#     ft_per_min = (repeat_length_in / 12) / (max(min_colors, colors) * constant) * 60
+#
+# Each model only differs by the ``constant`` multiplier.  The repeat length is
+# clamped to ``max_repeat`` (17.7" for every supported press) and the color
+# count is clamped to at least ``min_colors`` (always 2).  The constants below
+# come directly from the user-supplied workbook.
 PRESS_MODELS: dict[str, dict[str, float | int]] = {
-    "WS4600": {"min_colors": 4, "max_repeat": 25.0, "constant": 42.0},
-    "6X00": {"min_colors": 6, "max_repeat": 26.0, "constant": 38.0},
-    "7X00": {"min_colors": 7, "max_repeat": 30.0, "constant": 36.0},
-    "20X00": {"min_colors": 8, "max_repeat": 36.0, "constant": 34.0},
+    "WS4600": {"min_colors": 2, "max_repeat": 17.7, "constant": 0.441},
+    "6X00": {"min_colors": 2, "max_repeat": 17.7, "constant": 0.441},
+    "7X00": {"min_colors": 2, "max_repeat": 17.7, "constant": 0.25},
+    "20X00": {"min_colors": 2, "max_repeat": 17.7, "constant": 0.5217},
 }
 DEFAULT_PRESS_MODEL = next(iter(PRESS_MODELS))
 
@@ -610,24 +620,18 @@ class PressCalculatorDialog:
         clamped_colors = max(min_colors, color_count if color_count is not None else 0)
         clamped_colors = max(clamped_colors, 0)
 
-        if constant <= 0 or clamped_colors <= 0:
-            duration_minutes = 0.0
-            feet_per_minute = 0.0
-        else:
-            seconds_per_cycle = clamped_colors * constant
-            duration_minutes = seconds_per_cycle / 60.0
+        feet_per_repeat = max(repeat_length, 0.0) / 12.0
+        if feet_per_repeat <= 0 or constant <= 0 or clamped_colors <= 0:
+            return (0.0, 0.0, 0.0)
 
-            feet_per_repeat = max(repeat_length, 0.0) / 12.0
-            if feet_per_repeat <= 0:
-                feet_per_minute = 0.0
-            else:
-                feet_per_minute = (feet_per_repeat / seconds_per_cycle) * 60.0
+        seconds_per_cycle = clamped_colors * constant
+        if seconds_per_cycle <= 0:
+            return (0.0, 0.0, 0.0)
 
-        meters_per_minute: float | None
-        if feet_per_minute:
-            meters_per_minute = feet_per_minute / 3.28084
-        else:
-            meters_per_minute = 0.0 if feet_per_minute == 0 else None
+        feet_per_minute = (feet_per_repeat / seconds_per_cycle) * 60.0
+        meters_per_minute = feet_per_minute / 3.28084 if feet_per_minute else 0.0
+
+        duration_minutes = seconds_per_cycle / 60.0
 
         return (duration_minutes, feet_per_minute, meters_per_minute)
 
