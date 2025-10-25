@@ -246,7 +246,7 @@ class YBSApp:
 
         self._day_cells: Dict[DateKey, DayCell] = {}
         self._calendar_notes: Dict[DateKey, str] = {}
-        self._calendar_assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
+        self._calendar_assignments: Dict[DateKey, List[OrderRecord]] = {}
         self._calendar_hover: DateKey | None = None
         self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
@@ -309,12 +309,15 @@ class YBSApp:
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _normalize_assignment(values: Iterable[object]) -> Tuple[str, str]:
-        sequence = tuple(str(value) for value in values)
-        first = sequence[0] if len(sequence) > 0 else ""
-        second = sequence[1] if len(sequence) > 1 else ""
-        return (first, second)
+    def _normalize_assignment(self, values: object) -> OrderRecord:
+        record = OrderRecord.from_values(values)
+
+        for existing in self._all_orders:
+            if existing == record:
+                record = existing.merge_metadata(record)
+                break
+
+        return record
 
     @staticmethod
     def _event_state_has_flag(event: tk.Event | None, mask: int) -> bool:
@@ -606,7 +609,7 @@ class YBSApp:
 
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
-        assignments: Dict[DateKey, List[Tuple[str, str]]] = {}
+        assignments: Dict[DateKey, List[OrderRecord]] = {}
 
         data: object | None = None
         try:
@@ -633,14 +636,20 @@ class YBSApp:
                     if date_key is None or not isinstance(value, list):
                         continue
 
-                    normalized_assignments: List[Tuple[str, str]] = []
+                    normalized_assignments: List[OrderRecord] = []
                     for entry in value:
-                        if isinstance(entry, (list, tuple)):
-                            first = str(entry[0]) if len(entry) > 0 else ""
-                            second = str(entry[1]) if len(entry) > 1 else ""
-                            normalized_assignments.append((first, second))
+                        record: OrderRecord | None
+                        if isinstance(entry, dict):
+                            record = OrderRecord.from_dict(entry)
+                        elif isinstance(entry, (list, tuple)):
+                            record = OrderRecord.from_values(entry)
                         elif isinstance(entry, str):
-                            normalized_assignments.append((entry, ""))
+                            record = OrderRecord(order_number=entry, company="")
+                        else:
+                            record = None
+
+                        if record is not None:
+                            normalized_assignments.append(record)
 
                     if normalized_assignments:
                         assignments[date_key] = normalized_assignments
@@ -656,7 +665,7 @@ class YBSApp:
             for key, value in self._calendar_notes.items()
         }
         assignments = {
-            self._serialize_date_key(key): [list(item) for item in value]
+            self._serialize_date_key(key): [item.to_dict() for item in value]
             for key, value in self._calendar_assignments.items()
         }
 
@@ -695,12 +704,7 @@ class YBSApp:
             return {"had_key": False, "previous": None}
 
         assignments = self._calendar_assignments.get(date_key, [])
-        previous: list[Tuple[str, str]] = []
-        for entry in assignments:
-            if isinstance(entry, (list, tuple)):
-                first = str(entry[0]) if len(entry) > 0 else ""
-                second = str(entry[1]) if len(entry) > 1 else ""
-                previous.append((first, second))
+        previous = [record.to_dict() for record in assignments]
         return {"had_key": True, "previous": previous}
 
     def _capture_notes_state(self, date_key: DateKey) -> dict[str, Any]:
@@ -732,14 +736,25 @@ class YBSApp:
                 info_dict = info if isinstance(info, dict) else {}
                 had_key = bool(info_dict.get("had_key"))
                 previous_raw = info_dict.get("previous")
-                previous_list: list[Tuple[str, str]] | None = None
+                previous_list: list[dict[str, object]] | None = None
                 if isinstance(previous_raw, list):
-                    previous_list = []
+                    normalized_entries: list[dict[str, object]] = []
                     for entry in previous_raw:
-                        if isinstance(entry, (list, tuple)):
-                            first = str(entry[0]) if len(entry) > 0 else ""
-                            second = str(entry[1]) if len(entry) > 1 else ""
-                            previous_list.append((first, second))
+                        record: OrderRecord | None
+                        if isinstance(entry, dict):
+                            record = OrderRecord.from_dict(entry)
+                        elif isinstance(entry, (list, tuple)):
+                            record = OrderRecord.from_values(entry)
+                        elif isinstance(entry, str):
+                            record = OrderRecord(order_number=entry, company="")
+                        else:
+                            record = None
+
+                        if record is not None:
+                            normalized_entries.append(record.to_dict())
+
+                    if normalized_entries:
+                        previous_list = normalized_entries
 
                 normalized_dates[normalized_key] = {
                     "had_key": had_key,
@@ -839,13 +854,21 @@ class YBSApp:
 
                     info_dict = info if isinstance(info, dict) else {}
                     previous_raw = info_dict.get("previous")
-                    restored_assignments: list[Tuple[str, str]] = []
+                    restored_assignments: list[OrderRecord] = []
                     if isinstance(previous_raw, list):
                         for entry in previous_raw:
-                            if isinstance(entry, (list, tuple)):
-                                first = str(entry[0]) if len(entry) > 0 else ""
-                                second = str(entry[1]) if len(entry) > 1 else ""
-                                restored_assignments.append((first, second))
+                            record: OrderRecord | None
+                            if isinstance(entry, dict):
+                                record = OrderRecord.from_dict(entry)
+                            elif isinstance(entry, (list, tuple)):
+                                record = OrderRecord.from_values(entry)
+                            elif isinstance(entry, str):
+                                record = OrderRecord(order_number=entry, company="")
+                            else:
+                                record = None
+
+                            if record is not None:
+                                restored_assignments.append(record)
 
                     if restored_assignments:
                         self._calendar_assignments[normalized_key] = restored_assignments
@@ -974,13 +997,21 @@ class YBSApp:
 
                     info_dict = info if isinstance(info, dict) else {}
                     previous_raw = info_dict.get("previous")
-                    restored_assignments: list[Tuple[str, str]] = []
+                    restored_assignments: list[OrderRecord] = []
                     if isinstance(previous_raw, list):
                         for entry in previous_raw:
-                            if isinstance(entry, (list, tuple)):
-                                first = str(entry[0]) if len(entry) > 0 else ""
-                                second = str(entry[1]) if len(entry) > 1 else ""
-                                restored_assignments.append((first, second))
+                            record: OrderRecord | None
+                            if isinstance(entry, dict):
+                                record = OrderRecord.from_dict(entry)
+                            elif isinstance(entry, (list, tuple)):
+                                record = OrderRecord.from_values(entry)
+                            elif isinstance(entry, str):
+                                record = OrderRecord(order_number=entry, company="")
+                            else:
+                                record = None
+
+                            if record is not None:
+                                restored_assignments.append(record)
 
                     if restored_assignments:
                         self._calendar_assignments[normalized_key] = restored_assignments
@@ -2098,7 +2129,7 @@ class YBSApp:
             {"kind": "assignments", "dates": {date_key: snapshot}}
         )
 
-        removed_assignments: list[Tuple[str, str]] = []
+        removed_assignments: list[OrderRecord] = []
         for index in reversed(valid_indices):
             removed_assignments.append(assignments.pop(index))
         removed_assignments.reverse()
@@ -2885,7 +2916,7 @@ class YBSApp:
         current_selection = orders_list.curselection()
         selected_indices: tuple[int, ...] = tuple(int(i) for i in current_selection)
 
-        normalized_assignments: list[Tuple[str, str]] = []
+        normalized_assignments: list[OrderRecord] = []
         for idx in selected_indices:
             if 0 <= idx < len(assignments):
                 normalized_assignments.append(
@@ -3511,7 +3542,7 @@ class YBSApp:
             source_assignments_ref = None
 
         raw_source_orders = payload.get("source_orders")
-        normalized_source_orders: list[Tuple[str, str]] = []
+        normalized_source_orders: list[OrderRecord] = []
         if isinstance(raw_source_orders, (tuple, list)):
             normalized_source_orders = [
                 self._normalize_assignment(order)
@@ -3571,6 +3602,8 @@ class YBSApp:
         for order in normalized_orders:
             if order in target_assignments:
                 index = target_assignments.index(order)
+                existing_record = target_assignments[index]
+                target_assignments[index] = existing_record.merge_metadata(order)
             else:
                 target_assignments.append(order)
                 added_to_target = True
@@ -3687,7 +3720,13 @@ class YBSApp:
         assignments = self._calendar_assignments.setdefault(date_key, [])
 
         if normalized in assignments:
+            existing_index = assignments.index(normalized)
+            existing_record = assignments[existing_index]
+            merged = existing_record.merge_metadata(normalized)
+            assignments[existing_index] = merged
+            self._calendar_assignments[date_key] = assignments
             self._update_day_cell_display(date_key)
+            self._schedule_state_save()
             return False
 
         if push_undo:
@@ -3724,16 +3763,8 @@ class YBSApp:
         day_cell.header_label.configure(text=day_text)
         self._apply_day_cell_base_style(date_key)
 
-    def _format_assignment_label(self, assignment: Tuple[str, str]) -> str:
-        order_number = assignment[0].strip()
-        company = assignment[1].strip()
-        if order_number and company:
-            return f"{order_number} - {company}"
-        if order_number:
-            return order_number
-        if company:
-            return company
-        return "Unnamed order"
+    def _format_assignment_label(self, assignment: OrderRecord) -> str:
+        return assignment.label()
 
     def _format_date_label(self, date_key: DateKey) -> str:
         try:
@@ -3747,7 +3778,7 @@ class YBSApp:
 
     def _format_assignment_move_message(
         self,
-        assignments: Iterable[Tuple[str, str]],
+        assignments: Iterable[OrderRecord],
         target_label: str,
         *,
         source_label: str | None = None,
@@ -3759,8 +3790,8 @@ class YBSApp:
 
         count = len(assignment_list)
         if count == 1:
-            order_number = assignment_list[0][0].strip()
-            company = assignment_list[0][1].strip()
+            order_number = assignment_list[0].order_number.strip()
+            company = assignment_list[0].company.strip()
             order_label = "order"
             if order_number:
                 order_label += f" {order_number}"
@@ -3783,7 +3814,7 @@ class YBSApp:
         return f"Assigned {order_phrase} to {target_label}."
 
     def _format_bulk_removal_message(
-        self, date_key: DateKey, assignments: Iterable[Tuple[str, str]]
+        self, date_key: DateKey, assignments: Iterable[OrderRecord]
     ) -> str:
         assignment_list = list(assignments)
         if not assignment_list:
@@ -3797,10 +3828,10 @@ class YBSApp:
         return f"Removed {count} orders from {date_label}."
 
     def _format_removal_message(
-        self, date_key: DateKey, assignment: Tuple[str, str]
+        self, date_key: DateKey, assignment: OrderRecord
     ) -> str:
-        order_number = assignment[0].strip()
-        company = assignment[1].strip()
+        order_number = assignment.order_number.strip()
+        company = assignment.company.strip()
 
         if order_number:
             message = f"Removed order {order_number}"
