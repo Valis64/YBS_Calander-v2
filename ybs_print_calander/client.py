@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Mapping, Optional, Sequence
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -22,12 +22,218 @@ class NetworkError(YBSError):
     """Raised when the remote service cannot be reached."""
 
 
-@dataclass
+def _coerce_int(value: object) -> int | None:
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        if isinstance(value, bool):
+            return float(int(value))
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(eq=False)
 class OrderRecord:
-    """Represents a single order entry scraped from the manage page."""
+    """Represents a single order entry scraped from the manage page.
+
+    The record now captures additional scheduling metadata used by the GUI when
+    placing jobs onto the calendar.  ``color_count`` reflects the number of
+    colors in the job, ``repeat_length`` stores the repeat length (in inches),
+    and ``press_time_minutes`` stores a computed or user-specified press time.
+    """
 
     order_number: str
     company: str
+    color_count: int | None = None
+    repeat_length: float | None = None
+    press_time_minutes: float | None = None
+
+    def __post_init__(self) -> None:
+        self.order_number = str(self.order_number or "").strip()
+        self.company = str(self.company or "").strip()
+
+        if self.color_count is not None:
+            coerced = _coerce_int(self.color_count)
+            self.color_count = coerced if coerced is not None else None
+
+        if self.repeat_length is not None:
+            coerced = _coerce_float(self.repeat_length)
+            self.repeat_length = coerced if coerced is not None else None
+
+        if self.press_time_minutes is not None:
+            coerced = _coerce_float(self.press_time_minutes)
+            self.press_time_minutes = coerced if coerced is not None else None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, OrderRecord):
+            return NotImplemented
+        return (
+            self.order_number.lower(),
+            self.company.lower(),
+        ) == (
+            other.order_number.lower(),
+            other.company.lower(),
+        )
+
+    def copy(self) -> "OrderRecord":
+        return OrderRecord(
+            order_number=self.order_number,
+            company=self.company,
+            color_count=self.color_count,
+            repeat_length=self.repeat_length,
+            press_time_minutes=self.press_time_minutes,
+        )
+
+    def merge_metadata(self, other: "OrderRecord") -> "OrderRecord":
+        """Return a copy that keeps identifiers but prefers ``other`` metadata."""
+
+        return OrderRecord(
+            order_number=self.order_number or other.order_number,
+            company=self.company or other.company,
+            color_count=other.color_count if other.color_count is not None else self.color_count,
+            repeat_length=(
+                other.repeat_length if other.repeat_length is not None else self.repeat_length
+            ),
+            press_time_minutes=(
+                other.press_time_minutes
+                if other.press_time_minutes is not None
+                else self.press_time_minutes
+            ),
+        )
+
+    def metadata_summary(self) -> str:
+        """Return a short textual summary of optional scheduling metadata."""
+
+        parts: list[str] = []
+        if self.color_count is not None:
+            parts.append(f"{self.color_count}c")
+        if self.repeat_length is not None:
+            repeat = f"{self.repeat_length:g}" if self.repeat_length % 1 else f"{int(self.repeat_length)}"
+            parts.append(f"{repeat}\" rpt")
+        if self.press_time_minutes is not None:
+            minutes = (
+                f"{self.press_time_minutes:.1f}"
+                if abs(self.press_time_minutes - round(self.press_time_minutes)) > 0.05
+                else f"{int(round(self.press_time_minutes))}"
+            )
+            parts.append(f"{minutes} min")
+        return ", ".join(parts)
+
+    def label(self) -> str:
+        """Return a human-friendly label combining the identifier and metadata."""
+
+        order_number = self.order_number.strip()
+        company = self.company.strip()
+        if order_number and company:
+            base = f"{order_number} - {company}"
+        elif order_number:
+            base = order_number
+        elif company:
+            base = company
+        else:
+            base = "Unnamed order"
+
+        metadata = self.metadata_summary()
+        return f"{base} [{metadata}]" if metadata else base
+
+    def estimate_press_time(
+        self,
+        *,
+        setup_minutes_per_color: float = 5.0,
+        repeat_minutes_factor: float = 0.25,
+    ) -> float | None:
+        """Estimate the press time using the stored color and repeat information.
+
+        The formula is intentionally simple and is designed to provide a starting
+        point for manual adjustments: setup time scales by the number of colors
+        and the repeat length contributes proportionally via ``repeat_minutes_factor``.
+        The computed value is saved to ``press_time_minutes`` and returned.  ``None``
+        is returned if no estimation can be made.
+        """
+
+        color_setup = 0.0
+        repeat_component = 0.0
+
+        if self.color_count is not None:
+            color_setup = max(0.0, setup_minutes_per_color) * max(self.color_count, 0)
+        if self.repeat_length is not None:
+            repeat_component = max(0.0, repeat_minutes_factor) * max(self.repeat_length, 0.0)
+
+        estimated = color_setup + repeat_component
+        if estimated == 0.0:
+            return None
+
+        self.press_time_minutes = round(estimated, 2)
+        return self.press_time_minutes
+
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {
+            "order_number": self.order_number,
+            "company": self.company,
+        }
+        if self.color_count is not None:
+            data["color_count"] = self.color_count
+        if self.repeat_length is not None:
+            data["repeat_length"] = self.repeat_length
+        if self.press_time_minutes is not None:
+            data["press_time_minutes"] = self.press_time_minutes
+        return data
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "OrderRecord":
+        order_number = payload.get("order_number", "")
+        company = payload.get("company", "")
+        color_count = _coerce_int(payload.get("color_count"))
+        repeat_length = _coerce_float(payload.get("repeat_length"))
+        press_time = _coerce_float(payload.get("press_time_minutes"))
+        return cls(
+            order_number=str(order_number or ""),
+            company=str(company or ""),
+            color_count=color_count,
+            repeat_length=repeat_length,
+            press_time_minutes=press_time,
+        )
+
+    @classmethod
+    def from_values(cls, values: object) -> "OrderRecord":
+        if isinstance(values, OrderRecord):
+            return values.copy()
+
+        if isinstance(values, Mapping):
+            return cls.from_dict(values)
+
+        sequence: Sequence[object]
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            sequence = values
+        else:
+            sequence = (values,) if values is not None else ()
+
+        if len(sequence) == 1 and isinstance(sequence[0], OrderRecord):
+            return sequence[0].copy()
+
+        order_number = str(sequence[0]) if len(sequence) > 0 else ""
+        company = str(sequence[1]) if len(sequence) > 1 else ""
+        color_count = _coerce_int(sequence[2]) if len(sequence) > 2 else None
+        repeat_length = _coerce_float(sequence[3]) if len(sequence) > 3 else None
+        press_time = _coerce_float(sequence[4]) if len(sequence) > 4 else None
+
+        return cls(
+            order_number=order_number,
+            company=company,
+            color_count=color_count,
+            repeat_length=repeat_length,
+            press_time_minutes=press_time,
+        )
 
 
 class YBSClient:
