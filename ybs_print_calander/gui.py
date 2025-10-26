@@ -15,7 +15,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from . import __version__
 from .client import AuthenticationError, NetworkError, OrderRecord, YBSClient
@@ -231,6 +231,13 @@ class HoverTooltip:
             pass
 
 
+class PressMetrics(NamedTuple):
+    total_minutes: float
+    feet_per_minute: float
+    meters_per_minute: float
+    total_linear_feet: float
+
+
 class PressCalculatorDialog:
     """Modal dialog responsible for collecting press calculation inputs."""
 
@@ -257,14 +264,14 @@ class PressCalculatorDialog:
         instructions = ttk.Label(
             content,
             text=(
-                "Provide the color count and repeat length for each order."
-                " Press speed and run time are calculated automatically."
+                "Provide the color count, repeat length, and job quantity for each order."
+                " Press speed, total footage, and run time are calculated automatically."
             ),
             style="Dark.TLabel",
             wraplength=420,
             justify="left",
         )
-        instructions.grid(row=0, column=0, columnspan=7, sticky="w", pady=(0, 15))
+        instructions.grid(row=0, column=0, columnspan=9, sticky="w", pady=(0, 15))
 
         self._model_names: tuple[str, ...] = tuple(PRESS_MODELS.keys())
 
@@ -273,9 +280,11 @@ class PressCalculatorDialog:
             "Press",
             "Colors",
             "Repeat (in)",
+            "Quantity",
             "Ft/min",
             "m/min",
-            "Duration (min)",
+            "Total ft",
+            "Runtime (min)",
         ]
         for column, header in enumerate(headers):
             label = ttk.Label(content, text=header, style="Dark.TLabel")
@@ -294,7 +303,21 @@ class PressCalculatorDialog:
             )
             feet_var = tk.StringVar(value=self._format_float(order.press_speed_ft_min))
             meter_var = tk.StringVar(value=self._format_float(order.press_speed_m_min))
-            duration_var = tk.StringVar(value="")
+            quantity_var = tk.StringVar(
+                value="" if order.job_quantity is None else str(order.job_quantity)
+            )
+            total_feet_value: float | None = order.total_linear_feet
+            if (
+                total_feet_value is None
+                and order.repeat_length is not None
+                and order.job_quantity is not None
+            ):
+                total_feet_value = max(order.repeat_length, 0.0) * max(order.job_quantity, 0) / 12.0
+            total_feet_var = tk.StringVar(value=self._format_float(total_feet_value))
+            runtime_value = order.total_runtime_minutes
+            if runtime_value is None:
+                runtime_value = order.press_time_minutes
+            runtime_var = tk.StringVar(value=self._format_float(runtime_value))
 
             description = ttk.Label(
                 content,
@@ -321,13 +344,21 @@ class PressCalculatorDialog:
             repeat_entry = ttk.Entry(content, textvariable=repeat_var, width=10, justify="center")
             repeat_entry.grid(row=current_row, column=3, sticky="e", pady=(0, 8))
 
+            quantity_entry = ttk.Entry(
+                content,
+                textvariable=quantity_var,
+                width=10,
+                justify="center",
+            )
+            quantity_entry.grid(row=current_row, column=4, sticky="e", pady=(0, 8))
+
             feet_label = ttk.Label(
                 content,
                 textvariable=feet_var,
                 style="Dark.TLabel",
                 anchor="e",
             )
-            feet_label.grid(row=current_row, column=4, sticky="e", pady=(0, 8))
+            feet_label.grid(row=current_row, column=5, sticky="e", pady=(0, 8))
 
             meter_label = ttk.Label(
                 content,
@@ -335,15 +366,23 @@ class PressCalculatorDialog:
                 style="Dark.TLabel",
                 anchor="e",
             )
-            meter_label.grid(row=current_row, column=5, sticky="e", pady=(0, 8))
+            meter_label.grid(row=current_row, column=6, sticky="e", pady=(0, 8))
 
-            duration_label = ttk.Label(
+            total_feet_label = ttk.Label(
                 content,
-                textvariable=duration_var,
+                textvariable=total_feet_var,
                 style="Dark.TLabel",
                 anchor="e",
             )
-            duration_label.grid(row=current_row, column=6, sticky="e", pady=(0, 8))
+            total_feet_label.grid(row=current_row, column=7, sticky="e", pady=(0, 8))
+
+            runtime_label = ttk.Label(
+                content,
+                textvariable=runtime_var,
+                style="Dark.TLabel",
+                anchor="e",
+            )
+            runtime_label.grid(row=current_row, column=8, sticky="e", pady=(0, 8))
 
             row_info = {
                 "model_var": model_var,
@@ -352,7 +391,10 @@ class PressCalculatorDialog:
                 "repeat_var": repeat_var,
                 "feet_var": feet_var,
                 "meter_var": meter_var,
-                "duration_var": duration_var,
+                "quantity_var": quantity_var,
+                "quantity_entry": quantity_entry,
+                "total_feet_var": total_feet_var,
+                "runtime_var": runtime_var,
                 "color_entry": color_entry,
                 "repeat_entry": repeat_entry,
                 "order": order,
@@ -366,6 +408,9 @@ class PressCalculatorDialog:
                 "write", lambda *_args, idx=index: self._update_row(idx)
             )
             repeat_var.trace_add(
+                "write", lambda *_args, idx=index: self._update_row(idx)
+            )
+            quantity_var.trace_add(
                 "write", lambda *_args, idx=index: self._update_row(idx)
             )
 
@@ -402,7 +447,7 @@ class PressCalculatorDialog:
         submit_button.grid(row=0, column=1)
 
         content.columnconfigure(0, weight=1)
-        for column_index in range(1, 7):
+        for column_index in range(1, len(headers)):
             content.columnconfigure(column_index, weight=0)
 
     def show(self) -> Optional[List[OrderRecord]]:
@@ -490,6 +535,7 @@ class PressCalculatorDialog:
                 model_name = DEFAULT_PRESS_MODEL
             color_text = row["color_var"].get()
             repeat_text = row["repeat_var"].get()
+            quantity_text = row["quantity_var"].get()
 
             color_value = self._strict_int(color_text)
             if color_value is None:
@@ -501,13 +547,23 @@ class PressCalculatorDialog:
                 self._handle_invalid(row["repeat_entry"], "Please enter a valid repeat length.")
                 return
 
+            quantity_value = self._strict_int(quantity_text)
+            if quantity_value is None or quantity_value <= 0:
+                self._handle_invalid(
+                    row["quantity_entry"],
+                    "Please enter a job quantity greater than zero.",
+                )
+                return
+
             try:
-                metrics = self._compute_metrics(model_name, color_value, repeat_value)
+                metrics = self._compute_metrics(
+                    model_name, color_value, repeat_value, quantity_value
+                )
             except ValueError as exc:
                 self._handle_invalid(row["repeat_entry"], str(exc))
                 return
 
-            if metrics is None or metrics[0] <= 0:
+            if metrics is None or metrics.total_minutes <= 0:
                 self._handle_invalid(
                     row["repeat_entry"],
                     "Inputs must yield a positive run time.",
@@ -518,13 +574,12 @@ class PressCalculatorDialog:
             order_copy.press_model = model_name
             order_copy.color_count = color_value
             order_copy.repeat_length = repeat_value
-            order_copy.press_time_minutes = round(metrics[0], 2)
-            order_copy.press_speed_ft_min = (
-                round(metrics[1], 2) if metrics[1] is not None else None
-            )
-            order_copy.press_speed_m_min = (
-                round(metrics[2], 2) if metrics[2] is not None else None
-            )
+            order_copy.job_quantity = quantity_value
+            order_copy.total_linear_feet = round(metrics.total_linear_feet, 2)
+            order_copy.total_runtime_minutes = round(metrics.total_minutes, 2)
+            order_copy.press_time_minutes = order_copy.total_runtime_minutes
+            order_copy.press_speed_ft_min = round(metrics.feet_per_minute, 2)
+            order_copy.press_speed_m_min = round(metrics.meters_per_minute, 2)
             results.append(order_copy)
 
         self.result = results
@@ -558,26 +613,41 @@ class PressCalculatorDialog:
             model_name = DEFAULT_PRESS_MODEL
         color_value = self._coerce_int(row["color_var"].get())
         repeat_value = self._coerce_float(row["repeat_var"].get())
+        quantity_value = self._coerce_int(row["quantity_var"].get())
         try:
-            metrics = self._compute_metrics(model_name, color_value, repeat_value)
+            metrics = self._compute_metrics(
+                model_name, color_value, repeat_value, quantity_value
+            )
         except ValueError as exc:
-            row["duration_var"].set("")
+            row["runtime_var"].set("")
             row["feet_var"].set("")
             row["meter_var"].set("")
+            row["total_feet_var"].set("")
             self._set_error(str(exc))
             return
 
-        if metrics is None or metrics[0] <= 0:
+        if metrics is None:
+            if color_value is None or repeat_value is None or quantity_value is None:
+                row["feet_var"].set("")
+                row["meter_var"].set("")
+                row["total_feet_var"].set("")
+                row["runtime_var"].set("")
+            return
+
+        if metrics.total_minutes <= 0:
             row["feet_var"].set("")
             row["meter_var"].set("")
-            row["duration_var"].set("")
+            row["total_feet_var"].set("")
+            row["runtime_var"].set("")
         else:
-            duration_display = self._format_number(metrics[0])
-            feet_display = self._format_number(metrics[1]) if metrics[1] is not None else ""
-            meter_display = self._format_number(metrics[2]) if metrics[2] is not None else ""
-            row["duration_var"].set(duration_display)
+            duration_display = self._format_number(metrics.total_minutes)
+            feet_display = self._format_number(metrics.feet_per_minute)
+            meter_display = self._format_number(metrics.meters_per_minute)
+            total_feet_display = self._format_number(metrics.total_linear_feet)
+            row["runtime_var"].set(duration_display)
             row["feet_var"].set(feet_display)
             row["meter_var"].set(meter_display)
+            row["total_feet_var"].set(total_feet_display)
             if self._error_var.get():
                 self._set_error("")
 
@@ -599,8 +669,9 @@ class PressCalculatorDialog:
         model_name: str,
         color_count: Optional[int],
         repeat_length: Optional[float],
-    ) -> Optional[Tuple[float, Optional[float], Optional[float]]]:
-        if color_count is None or repeat_length is None:
+        quantity: Optional[int],
+    ) -> Optional[PressMetrics]:
+        if color_count is None or repeat_length is None or quantity is None:
             return None
 
         model = PRESS_MODELS.get(model_name)
@@ -622,18 +693,19 @@ class PressCalculatorDialog:
 
         feet_per_repeat = max(repeat_length, 0.0) / 12.0
         if feet_per_repeat <= 0 or constant <= 0 or clamped_colors <= 0:
-            return (0.0, 0.0, 0.0)
+            return PressMetrics(0.0, 0.0, 0.0, 0.0)
 
         seconds_per_cycle = clamped_colors * constant
         if seconds_per_cycle <= 0:
-            return (0.0, 0.0, 0.0)
+            return PressMetrics(0.0, 0.0, 0.0, 0.0)
 
         feet_per_minute = (feet_per_repeat / seconds_per_cycle) * 60.0
         meters_per_minute = feet_per_minute / 3.28084 if feet_per_minute else 0.0
 
-        duration_minutes = seconds_per_cycle / 60.0
+        total_feet = feet_per_repeat * max(quantity, 0)
+        total_minutes = (seconds_per_cycle / 60.0) * max(quantity, 0)
 
-        return (duration_minutes, feet_per_minute, meters_per_minute)
+        return PressMetrics(total_minutes, feet_per_minute, meters_per_minute, total_feet)
 
     @staticmethod
     def _coerce_int(value: str) -> Optional[int]:
@@ -4100,6 +4172,9 @@ class YBSApp:
                             "color_count",
                             "repeat_length",
                             "press_time_minutes",
+                            "job_quantity",
+                            "total_linear_feet",
+                            "total_runtime_minutes",
                             "press_model",
                             "press_speed_ft_min",
                             "press_speed_m_min",
@@ -4439,7 +4514,19 @@ class YBSApp:
         self._refresh_duration_canvas_selection(date_key)
 
     def _format_assignment_label(self, assignment: OrderRecord) -> str:
-        return assignment.label()
+        base_label = assignment.label()
+        duration = self._get_assignment_duration(assignment)
+        total_feet = self._get_assignment_total_feet(assignment)
+        extras: list[str] = []
+        duration_text = self._format_minutes_text(duration)
+        feet_text = self._format_feet_text(total_feet)
+        if duration_text and duration_text not in base_label:
+            extras.append(duration_text)
+        if feet_text and feet_text not in base_label:
+            extras.append(feet_text)
+        if extras:
+            return f"{base_label} ({', '.join(extras)})"
+        return base_label
 
     def _get_assignment_duration(self, assignment: OrderRecord) -> float | None:
         duration = assignment.press_time_minutes
@@ -4451,12 +4538,56 @@ class YBSApp:
             return max(coerced, 0.0)
         return None
 
-    def _format_duration_label(self, duration: float | None) -> str:
+    def _get_assignment_total_feet(self, assignment: OrderRecord) -> float | None:
+        total_feet = getattr(assignment, "total_linear_feet", None)
+        if total_feet is None and getattr(assignment, "repeat_length", None) is not None:
+            repeat = getattr(assignment, "repeat_length", None)
+            quantity = getattr(assignment, "job_quantity", None)
+            try:
+                repeat_val = float(repeat) if repeat is not None else None
+                quantity_val = int(quantity) if quantity is not None else None
+            except (TypeError, ValueError):
+                repeat_val = None
+                quantity_val = None
+            if repeat_val is not None and quantity_val is not None:
+                total_feet = repeat_val * max(quantity_val, 0) / 12.0
+        if total_feet is None:
+            return None
+        try:
+            value = float(total_feet)
+        except (TypeError, ValueError):
+            return None
+        return max(value, 0.0)
+
+    def _format_minutes_text(self, duration: float | None) -> str:
         if duration is None:
-            return "No duration"
+            return ""
         if abs(duration - round(duration)) <= 0.05:
             return f"{int(round(duration))} min"
         return f"{duration:.1f} min"
+
+    def _format_feet_text(self, feet: float | None) -> str:
+        if feet is None:
+            return ""
+        rounded = round(feet, 2)
+        if abs(rounded - round(rounded)) <= 0.05:
+            return f"{int(round(rounded))} ft"
+        if abs(rounded) >= 10:
+            return f"{rounded:.1f} ft"
+        return f"{rounded:.2f} ft"
+
+    def _format_duration_label(
+        self, duration: float | None, total_feet: float | None
+    ) -> str:
+        duration_text = self._format_minutes_text(duration)
+        feet_text = self._format_feet_text(total_feet)
+        if duration_text and feet_text:
+            return f"{duration_text} / {feet_text}"
+        if duration_text:
+            return duration_text
+        if feet_text:
+            return feet_text
+        return "No runtime"
 
     def _get_listbox_row_height(self, orders_list: tk.Listbox) -> int:
         try:
@@ -4496,6 +4627,9 @@ class YBSApp:
             return
 
         durations = [self._get_assignment_duration(assignment) for assignment in assignments_list]
+        total_feet_values = [
+            self._get_assignment_total_feet(assignment) for assignment in assignments_list
+        ]
         max_duration = max((value for value in durations if value is not None), default=0.0)
 
         try:
@@ -4558,7 +4692,8 @@ class YBSApp:
                 tags=tags,
             )
 
-            label = self._format_duration_label(duration)
+            total_feet = total_feet_values[idx] if idx < len(total_feet_values) else None
+            label = self._format_duration_label(duration, total_feet)
             label_color = (
                 DURATION_BAR_LABEL_SELECTED_COLOR
                 if idx in selected_set
@@ -4583,6 +4718,7 @@ class YBSApp:
         setattr(canvas, "_ybs_row_height", row_height)
         setattr(canvas, "_ybs_count", len(assignments_list))
         setattr(canvas, "_ybs_durations", durations)
+        setattr(canvas, "_ybs_total_feet", total_feet_values)
 
     def _update_day_cell_duration_canvas(
         self,
