@@ -60,6 +60,9 @@ class OrderRecord:
     color_count: int | None = None
     repeat_length: float | None = None
     press_time_minutes: float | None = None
+    job_quantity: int | None = None
+    total_linear_feet: float | None = None
+    total_runtime_minutes: float | None = None
     press_model: str | None = None
     press_speed_ft_min: float | None = None
     press_speed_m_min: float | None = None
@@ -80,6 +83,21 @@ class OrderRecord:
             coerced = _coerce_float(self.press_time_minutes)
             self.press_time_minutes = coerced if coerced is not None else None
 
+        if self.job_quantity is not None:
+            coerced = _coerce_int(self.job_quantity)
+            if coerced is not None and coerced >= 0:
+                self.job_quantity = coerced
+            else:
+                self.job_quantity = None
+
+        if self.total_linear_feet is not None:
+            coerced = _coerce_float(self.total_linear_feet)
+            self.total_linear_feet = coerced if coerced is not None else None
+
+        if self.total_runtime_minutes is not None:
+            coerced = _coerce_float(self.total_runtime_minutes)
+            self.total_runtime_minutes = coerced if coerced is not None else None
+
         if self.press_model is not None:
             text = str(self.press_model).strip()
             self.press_model = text or None
@@ -93,6 +111,32 @@ class OrderRecord:
             self.press_speed_m_min = coerced if coerced is not None else None
         elif self.press_speed_ft_min is not None:
             self.press_speed_m_min = round(self.press_speed_ft_min / 3.28084, 4)
+
+        # Keep runtime metadata synchronized when possible.
+        runtime_source = None
+        if self.total_runtime_minutes is not None:
+            runtime_source = self.total_runtime_minutes
+        elif self.press_time_minutes is not None:
+            runtime_source = self.press_time_minutes
+
+        if runtime_source is not None:
+            runtime = _coerce_float(runtime_source)
+            if runtime is not None and runtime >= 0:
+                self.total_runtime_minutes = runtime
+                self.press_time_minutes = runtime
+            else:
+                self.total_runtime_minutes = None
+                self.press_time_minutes = None
+
+        if (
+            self.total_linear_feet is None
+            and self.repeat_length is not None
+            and self.job_quantity is not None
+        ):
+            repeat_feet = _coerce_float(self.repeat_length)
+            quantity = _coerce_int(self.job_quantity)
+            if repeat_feet is not None and repeat_feet >= 0 and quantity is not None:
+                self.total_linear_feet = round(max(repeat_feet, 0.0) * max(quantity, 0) / 12.0, 4)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, OrderRecord):
@@ -112,6 +156,9 @@ class OrderRecord:
             color_count=self.color_count,
             repeat_length=self.repeat_length,
             press_time_minutes=self.press_time_minutes,
+            job_quantity=self.job_quantity,
+            total_linear_feet=self.total_linear_feet,
+            total_runtime_minutes=self.total_runtime_minutes,
             press_model=self.press_model,
             press_speed_ft_min=self.press_speed_ft_min,
             press_speed_m_min=self.press_speed_m_min,
@@ -131,6 +178,21 @@ class OrderRecord:
                 other.press_time_minutes
                 if other.press_time_minutes is not None
                 else self.press_time_minutes
+            ),
+            job_quantity=(
+                other.job_quantity
+                if other.job_quantity is not None
+                else self.job_quantity
+            ),
+            total_linear_feet=(
+                other.total_linear_feet
+                if other.total_linear_feet is not None
+                else self.total_linear_feet
+            ),
+            total_runtime_minutes=(
+                other.total_runtime_minutes
+                if other.total_runtime_minutes is not None
+                else self.total_runtime_minutes
             ),
             press_model=(
                 other.press_model if other.press_model is not None else self.press_model
@@ -158,11 +220,28 @@ class OrderRecord:
         if self.repeat_length is not None:
             repeat = f"{self.repeat_length:g}" if self.repeat_length % 1 else f"{int(self.repeat_length)}"
             parts.append(f"{repeat}\" rpt")
+        if self.job_quantity is not None:
+            parts.append(f"qty {self.job_quantity}")
+        if self.total_linear_feet is not None:
+            total_feet = (
+                f"{self.total_linear_feet:.1f}"
+                if abs(self.total_linear_feet - round(self.total_linear_feet)) > 0.05
+                else f"{int(round(self.total_linear_feet))}"
+            )
+            parts.append(f"{total_feet} ft")
+        runtime_minutes: float | None = None
+        if self.total_runtime_minutes is not None:
+            runtime_minutes = self.total_runtime_minutes
+        elif self.press_time_minutes is not None:
+            runtime_minutes = self.press_time_minutes
         if self.press_time_minutes is not None:
+            # ``press_time_minutes`` mirrors ``total_runtime_minutes`` when present.
+            runtime_minutes = runtime_minutes or self.press_time_minutes
+        if runtime_minutes is not None:
             minutes = (
-                f"{self.press_time_minutes:.1f}"
-                if abs(self.press_time_minutes - round(self.press_time_minutes)) > 0.05
-                else f"{int(round(self.press_time_minutes))}"
+                f"{runtime_minutes:.1f}"
+                if abs(runtime_minutes - round(runtime_minutes)) > 0.05
+                else f"{int(round(runtime_minutes))}"
             )
             parts.append(f"{minutes} min")
         if self.press_speed_ft_min is not None:
@@ -224,11 +303,13 @@ class OrderRecord:
         estimated = color_setup + repeat_component
         if estimated <= 0.0:
             self.press_time_minutes = None
+            self.total_runtime_minutes = None
             self.press_speed_ft_min = None
             self.press_speed_m_min = None
             return None
 
         self.press_time_minutes = round(estimated, 2)
+        self.total_runtime_minutes = self.press_time_minutes
         self.press_speed_ft_min = None
         self.press_speed_m_min = None
         return self.press_time_minutes
@@ -244,6 +325,12 @@ class OrderRecord:
             data["repeat_length"] = self.repeat_length
         if self.press_time_minutes is not None:
             data["press_time_minutes"] = self.press_time_minutes
+        if self.job_quantity is not None:
+            data["job_quantity"] = self.job_quantity
+        if self.total_linear_feet is not None:
+            data["total_linear_feet"] = self.total_linear_feet
+        if self.total_runtime_minutes is not None:
+            data["total_runtime_minutes"] = self.total_runtime_minutes
         if self.press_model:
             data["press_model"] = self.press_model
         if self.press_speed_ft_min is not None:
@@ -259,6 +346,9 @@ class OrderRecord:
         color_count = _coerce_int(payload.get("color_count"))
         repeat_length = _coerce_float(payload.get("repeat_length"))
         press_time = _coerce_float(payload.get("press_time_minutes"))
+        job_quantity = _coerce_int(payload.get("job_quantity"))
+        total_linear_feet = _coerce_float(payload.get("total_linear_feet"))
+        total_runtime = _coerce_float(payload.get("total_runtime_minutes"))
         press_model = payload.get("press_model")
         press_speed_ft = _coerce_float(
             payload.get("press_speed_ft_min")
@@ -272,6 +362,9 @@ class OrderRecord:
             color_count=color_count,
             repeat_length=repeat_length,
             press_time_minutes=press_time,
+            job_quantity=job_quantity,
+            total_linear_feet=total_linear_feet,
+            total_runtime_minutes=total_runtime,
             press_model=press_model,
             press_speed_ft_min=press_speed_ft,
             press_speed_m_min=press_speed_m,
@@ -302,6 +395,9 @@ class OrderRecord:
         raw_press_model = sequence[5] if len(sequence) > 5 else None
         press_speed_ft = _coerce_float(sequence[6]) if len(sequence) > 6 else None
         press_speed_m = _coerce_float(sequence[7]) if len(sequence) > 7 else None
+        job_quantity = _coerce_int(sequence[8]) if len(sequence) > 8 else None
+        total_linear_feet = _coerce_float(sequence[9]) if len(sequence) > 9 else None
+        total_runtime = _coerce_float(sequence[10]) if len(sequence) > 10 else None
 
         press_model: str | None
         if isinstance(raw_press_model, str):
@@ -317,6 +413,9 @@ class OrderRecord:
             color_count=color_count,
             repeat_length=repeat_length,
             press_time_minutes=press_time,
+            job_quantity=job_quantity,
+            total_linear_feet=total_linear_feet,
+            total_runtime_minutes=total_runtime,
             press_model=press_model,
             press_speed_ft_min=press_speed_ft,
             press_speed_m_min=press_speed_m,
