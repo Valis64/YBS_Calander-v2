@@ -781,6 +781,7 @@ class YBSApp:
         self._day_cells: Dict[DateKey, DayCell] = {}
         self._calendar_notes: Dict[DateKey, str] = {}
         self._calendar_assignments: Dict[DateKey, List[OrderRecord]] = {}
+        self._calendar_hours_per_day: float = 16.0
         self._calendar_hover: DateKey | None = None
         self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
@@ -805,6 +806,10 @@ class YBSApp:
         self.last_refresh_var = tk.StringVar(value="")
         self._order_filter_var = tk.StringVar()
         self.month_label_var = tk.StringVar(value=today.strftime("%B %Y"))
+        self.calendar_hours_per_day_var = tk.DoubleVar(value=self._calendar_hours_per_day)
+        self.calendar_hours_per_day_var.trace_add(
+            "write", self._on_calendar_hours_var_changed
+        )
         self._all_orders: list[OrderRecord] = []
 
         self._configure_style()
@@ -1141,9 +1146,73 @@ class YBSApp:
 
         return (constrained_x, constrained_y)
 
+    def _parse_calendar_hours(self, value: object) -> float | None:
+        candidate: float | None
+        if isinstance(value, (int, float)):
+            candidate = float(value)
+        elif isinstance(value, str):
+            parsed = self._coerce_float(value)
+            candidate = float(parsed) if parsed is not None else None
+        else:
+            candidate = None
+
+        if candidate is None:
+            return None
+
+        if candidate < 1.0 or candidate > 24.0:
+            return None
+
+        return candidate
+
+    def _on_calendar_hours_var_changed(self, *_: object) -> None:
+        try:
+            value = float(self.calendar_hours_per_day_var.get())
+        except (tk.TclError, TypeError, ValueError):
+            return
+
+        if value < 1.0 or value > 24.0:
+            return
+
+        if abs(value - getattr(self, "_calendar_hours_per_day", 16.0)) <= 1e-9:
+            return
+
+        self._calendar_hours_per_day = value
+        self._schedule_state_save()
+
+    def _enforce_calendar_hours_bounds(self, _: tk.Event | None = None) -> None:
+        widget = getattr(self, "calendar_hours_spinbox", None)
+        if widget is None:
+            return
+
+        try:
+            text = widget.get()
+        except tk.TclError:
+            text = ""
+
+        text = text.strip()
+        value = self._calendar_hours_per_day
+
+        if text:
+            try:
+                parsed = float(text)
+            except ValueError:
+                parsed = value
+            value = min(24.0, max(1.0, parsed))
+
+        try:
+            current_value = float(self.calendar_hours_per_day_var.get())
+        except (tk.TclError, TypeError, ValueError):
+            current_value = self._calendar_hours_per_day
+
+        if abs(value - current_value) > 1e-9:
+            self.calendar_hours_per_day_var.set(value)
+        else:
+            self._calendar_hours_per_day = value
+
     def _load_state(self) -> None:
         notes: Dict[DateKey, str] = {}
         assignments: Dict[DateKey, List[OrderRecord]] = {}
+        hours_value = self._calendar_hours_per_day
 
         data: object | None = None
         try:
@@ -1188,8 +1257,14 @@ class YBSApp:
                     if normalized_assignments:
                         assignments[date_key] = normalized_assignments
 
+            raw_hours = data.get("calendar_hours_per_day")
+            parsed_hours = self._parse_calendar_hours(raw_hours)
+            if parsed_hours is not None:
+                hours_value = parsed_hours
+
         self._calendar_notes = notes
         self._calendar_assignments = assignments
+        self._calendar_hours_per_day = hours_value
 
     def _save_state(self) -> None:
         self._state_save_after_id = None
@@ -1203,7 +1278,11 @@ class YBSApp:
             for key, value in self._calendar_assignments.items()
         }
 
-        state = {"notes": notes, "assignments": assignments}
+        state = {
+            "notes": notes,
+            "assignments": assignments,
+            "calendar_hours_per_day": self._calendar_hours_per_day,
+        }
 
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1837,6 +1916,45 @@ class YBSApp:
         )
         self.last_refresh_label.grid(
             row=3, column=0, columnspan=3, sticky=tk.W, pady=(2, 0)
+        )
+
+        calendar_settings_frame = ttk.LabelFrame(
+            settings_tab,
+            text="Calendar Settings",
+            style="Dark.TLabelframe",
+            padding=10,
+        )
+        calendar_settings_frame.grid(
+            row=4,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(20, 0),
+        )
+        calendar_settings_frame.columnconfigure(1, weight=1)
+
+        press_hours_label = ttk.Label(
+            calendar_settings_frame,
+            text="Press hours per day",
+            style="Dark.TLabel",
+        )
+        press_hours_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+
+        self.calendar_hours_spinbox = ttk.Spinbox(
+            calendar_settings_frame,
+            from_=1.0,
+            to=24.0,
+            increment=0.5,
+            textvariable=self.calendar_hours_per_day_var,
+            width=6,
+            justify="right",
+        )
+        self.calendar_hours_spinbox.grid(row=0, column=1, sticky=tk.W)
+        self.calendar_hours_spinbox.bind("<FocusOut>", self._enforce_calendar_hours_bounds)
+        self.calendar_hours_spinbox.bind("<Return>", self._enforce_calendar_hours_bounds)
+        HoverTooltip(
+            self.calendar_hours_spinbox,
+            "Enter the available press hours per day (1–24).",
         )
 
         content_paned = ttk.Panedwindow(main_tab, orient=tk.HORIZONTAL, style="Dark.TPanedwindow")
