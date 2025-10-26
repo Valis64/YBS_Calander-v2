@@ -762,6 +762,16 @@ class DayCell:
     in_current_month: bool = True
 
 
+@dataclass
+class DetailView:
+    """Track widgets associated with an open day-details window."""
+
+    window: tk.Toplevel
+    duration_canvas: tk.Canvas
+    listbox: tk.Listbox
+    date_key: DateKey
+
+
 class YBSApp:
     """Encapsulates the Tkinter application."""
 
@@ -782,6 +792,7 @@ class YBSApp:
         self._calendar_notes: Dict[DateKey, str] = {}
         self._calendar_assignments: Dict[DateKey, List[OrderRecord]] = {}
         self._calendar_hours_per_day: float = 16.0
+        self._detail_views: list[DetailView] = []
         self._calendar_hover: DateKey | None = None
         self._day_cell_pointer_hover: DateKey | None = None
         self._active_day_header: DateKey | None = None
@@ -1178,6 +1189,7 @@ class YBSApp:
 
         self._calendar_hours_per_day = value
         self._schedule_state_save()
+        self._refresh_all_duration_canvases()
 
     def _enforce_calendar_hours_bounds(self, _: tk.Event | None = None) -> None:
         widget = getattr(self, "calendar_hours_spinbox", None)
@@ -2933,6 +2945,23 @@ class YBSApp:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(3, weight=1)
 
+        detail_view = DetailView(
+            window=window,
+            duration_canvas=duration_canvas,
+            listbox=listbox,
+            date_key=date_key,
+        )
+        self._detail_views.append(detail_view)
+
+        def unregister_detail_view() -> None:
+            if detail_view in self._detail_views:
+                self._detail_views.remove(detail_view)
+
+        def on_window_destroy(event: tk.Event | None = None) -> None:
+            widget = getattr(event, "widget", None)
+            if widget is window:
+                unregister_detail_view()
+
         def redraw_canvas(assignments: Iterable[OrderRecord]) -> None:
             row_height = self._get_listbox_row_height(listbox)
             selected_indices = listbox.curselection()
@@ -3089,6 +3118,7 @@ class YBSApp:
             close_dialog()
 
         def close_dialog() -> None:
+            unregister_detail_view()
             window.destroy()
 
         remove_button = ttk.Button(
@@ -3119,6 +3149,7 @@ class YBSApp:
         duration_canvas.bind("<ButtonPress-1>", on_canvas_click)
         duration_canvas.bind("<Configure>", on_canvas_configure)
         window.protocol("WM_DELETE_WINDOW", close_dialog)
+        window.bind("<Destroy>", on_window_destroy, add="+")
 
         refresh_list()
         window.update_idletasks()
@@ -4748,7 +4779,15 @@ class YBSApp:
         total_feet_values = [
             self._get_assignment_total_feet(assignment) for assignment in assignments_list
         ]
-        max_duration = max((value for value in durations if value is not None), default=0.0)
+
+        hours_per_day = getattr(self, "_calendar_hours_per_day", None)
+        try:
+            hours_value = float(hours_per_day) if hours_per_day is not None else 16.0
+        except (TypeError, ValueError):
+            hours_value = 16.0
+        if hours_value <= 0:
+            hours_value = 16.0
+        daily_minutes = max(hours_value * 60.0, 1.0)
 
         try:
             width = int(canvas.winfo_width())
@@ -4780,12 +4819,20 @@ class YBSApp:
         for idx, duration in enumerate(durations):
             top = padding_y + idx * row_height
             bottom = top + bar_height
-            if duration is None or max_duration <= 0:
+            if duration is None:
                 bar_fraction = 0.0
             else:
-                bar_fraction = max(duration / max_duration, 0.0)
+                try:
+                    raw_fraction = float(duration) / daily_minutes
+                except (TypeError, ValueError):
+                    raw_fraction = 0.0
+                bar_fraction = max(0.0, min(raw_fraction, 1.0))
 
-            if duration and duration > 0 and max_duration > 0:
+            if (
+                duration is not None
+                and duration > 0
+                and daily_minutes > 0
+            ):
                 bar_length = max(int(bar_fraction * available_width), 6)
             else:
                 bar_length = max(int(available_width * 0.15), 4)
@@ -4912,6 +4959,50 @@ class YBSApp:
                     else DURATION_BAR_LABEL_COLOR
                 )
                 canvas.itemconfigure(label_item, fill=label_color)
+
+    def _refresh_all_duration_canvases(self) -> None:
+        def remove_detail_view(view: DetailView) -> None:
+            if view in self._detail_views:
+                self._detail_views.remove(view)
+
+        for date_key, day_cell in self._day_cells.items():
+            assignments = self._calendar_assignments.get(date_key, [])
+            self._update_day_cell_duration_canvas(date_key, day_cell, assignments)
+            self._refresh_duration_canvas_selection(date_key)
+
+        for detail_view in list(self._detail_views):
+            try:
+                if not detail_view.window.winfo_exists():
+                    remove_detail_view(detail_view)
+                    continue
+            except tk.TclError:
+                remove_detail_view(detail_view)
+                continue
+
+            canvas = detail_view.duration_canvas
+            try:
+                if not canvas.winfo_exists():
+                    remove_detail_view(detail_view)
+                    continue
+            except tk.TclError:
+                remove_detail_view(detail_view)
+                continue
+
+            listbox = detail_view.listbox
+            try:
+                selected_indices = listbox.curselection()
+            except tk.TclError:
+                selected_indices = ()
+
+            row_height = self._get_listbox_row_height(listbox)
+            assignments = self._calendar_assignments.get(detail_view.date_key, [])
+            self._render_duration_canvas(
+                canvas,
+                assignments,
+                row_height=row_height,
+                selected_indices=selected_indices,
+                date_key=detail_view.date_key,
+            )
 
     def _schedule_duration_canvas_redraw(
         self, date_key: DateKey, canvas: tk.Canvas | None, *, delay: int = 20
