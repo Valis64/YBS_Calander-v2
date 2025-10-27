@@ -772,6 +772,24 @@ class DetailView:
     date_key: DateKey
 
 
+class _DurationOverflowCarry(NamedTuple):
+    """Track remaining minutes that should spill into future days."""
+
+    assignment: OrderRecord
+    index: int
+    remaining_minutes: float
+    source_date: DateKey
+
+
+class _DurationOverflowSlice(NamedTuple):
+    """Describe the portion of an assignment rendered on a spillover day."""
+
+    assignment: OrderRecord
+    index: int
+    minutes: float
+    source_date: DateKey
+
+
 class YBSApp:
     """Encapsulates the Tkinter application."""
 
@@ -4769,11 +4787,6 @@ class YBSApp:
             pass
 
         padding_y = 4
-        total_height = max(len(assignments_list) * row_height + padding_y * 2, row_height)
-        try:
-            canvas.configure(height=total_height)
-        except tk.TclError:
-            return
 
         durations = [self._get_assignment_duration(assignment) for assignment in assignments_list]
         total_feet_values = [
@@ -4788,6 +4801,11 @@ class YBSApp:
         if hours_value <= 0:
             hours_value = 16.0
         daily_minutes = max(hours_value * 60.0, 1.0)
+
+        overflow_map, local_slice_map = self._calculate_duration_render_plan(
+            daily_minutes, date_key
+        )
+        continuations = overflow_map.get(date_key, []) if date_key else []
 
         try:
             width = int(canvas.winfo_width())
@@ -4816,23 +4834,29 @@ class YBSApp:
                 except (TypeError, ValueError):
                     continue
 
-        for idx, duration in enumerate(durations):
-            top = padding_y + idx * row_height
-            bottom = top + bar_height
-            if duration is None:
+        rendered_durations: list[float | None] = []
+
+        def _draw_bar(
+            *,
+            minutes: float | None,
+            row_index: int,
+            idx: int,
+            assignment: OrderRecord | None = None,
+            is_continuation: bool = False,
+        ) -> None:
+            if minutes is None:
                 bar_fraction = 0.0
             else:
                 try:
-                    raw_fraction = float(duration) / daily_minutes
+                    raw_fraction = float(minutes) / daily_minutes
                 except (TypeError, ValueError):
                     raw_fraction = 0.0
                 bar_fraction = max(0.0, min(raw_fraction, 1.0))
 
-            if (
-                duration is not None
-                and duration > 0
-                and daily_minutes > 0
-            ):
+            top = padding_y + row_index * row_height
+            bottom = top + bar_height
+
+            if minutes is not None and minutes > 0 and daily_minutes > 0:
                 bar_length = max(int(bar_fraction * available_width), 6)
             else:
                 bar_length = max(int(available_width * 0.15), 4)
@@ -4843,10 +4867,13 @@ class YBSApp:
             fill_color = (
                 DURATION_BAR_SELECTED_COLOR
                 if idx in selected_set
-                else (DURATION_BAR_COLOR if duration else DURATION_BAR_EMPTY_COLOR)
+                else (
+                    DURATION_BAR_COLOR if minutes and minutes > 0 else DURATION_BAR_EMPTY_COLOR
+                )
             )
 
-            tags = ("duration_bar", f"index-{idx}")
+            extra_tags = ("duration_continuation",) if is_continuation else ()
+            tags = ("duration_bar", *extra_tags, f"index-{idx}")
             canvas.create_rectangle(
                 left,
                 top,
@@ -4857,8 +4884,13 @@ class YBSApp:
                 tags=tags,
             )
 
-            total_feet = total_feet_values[idx] if idx < len(total_feet_values) else None
-            label = self._format_duration_label(duration, total_feet)
+            if assignment is None:
+                total_feet = None
+            else:
+                total_feet = self._get_assignment_total_feet(assignment)
+            label = self._format_duration_label(minutes, total_feet)
+            if is_continuation and label:
+                label = f"{label} (cont.)"
             label_color = (
                 DURATION_BAR_LABEL_SELECTED_COLOR
                 if idx in selected_set
@@ -4874,6 +4906,44 @@ class YBSApp:
                 tags=label_tags,
             )
 
+        row_index = 0
+        for entry in continuations:
+            minutes = entry.minutes if entry.minutes > 0 else None
+            _draw_bar(
+                minutes=minutes,
+                row_index=row_index,
+                idx=entry.index,
+                assignment=entry.assignment,
+                is_continuation=True,
+            )
+            row_index += 1
+
+        for idx, assignment in enumerate(assignments_list):
+            slice_minutes = local_slice_map.get((date_key, idx)) if date_key else None
+            if slice_minutes is None and durations[idx] is not None:
+                try:
+                    slice_minutes = float(durations[idx])
+                except (TypeError, ValueError):
+                    slice_minutes = None
+            rendered_durations.append(slice_minutes)
+            _draw_bar(
+                minutes=slice_minutes,
+                row_index=row_index,
+                idx=idx,
+                assignment=assignment,
+            )
+            row_index += 1
+
+        row_count = len(assignments_list) + len(continuations)
+        if row_count <= 0:
+            row_count = 1
+        total_height = max(row_count * row_height + padding_y * 2, row_height)
+
+        try:
+            canvas.configure(height=total_height)
+        except tk.TclError:
+            return
+
         try:
             canvas.configure(scrollregion=(0, 0, width, total_height))
         except tk.TclError:
@@ -4882,8 +4952,136 @@ class YBSApp:
         setattr(canvas, "_ybs_date_key", date_key)
         setattr(canvas, "_ybs_row_height", row_height)
         setattr(canvas, "_ybs_count", len(assignments_list))
-        setattr(canvas, "_ybs_durations", durations)
+        setattr(canvas, "_ybs_durations", rendered_durations)
         setattr(canvas, "_ybs_total_feet", total_feet_values)
+
+    def _iter_duration_segments(
+        self, minutes: float | None, daily_minutes: float
+    ) -> Iterable[float]:
+        if minutes is None:
+            return
+
+        try:
+            remaining = float(minutes)
+        except (TypeError, ValueError):
+            return
+
+        if remaining <= 0 or daily_minutes <= 0:
+            return
+
+        max_chunk = max(float(daily_minutes), 1.0)
+        epsilon = 1e-9
+        while remaining > epsilon:
+            chunk = min(remaining, max_chunk)
+            if chunk <= 0:
+                break
+            yield chunk
+            remaining = max(remaining - chunk, 0.0)
+
+    def _sorted_day_cell_keys(
+        self, extra_keys: Iterable[DateKey] | None = None
+    ) -> list[DateKey]:
+        keys: set[DateKey] = set(self._day_cells.keys())
+        if extra_keys is not None:
+            for key in extra_keys:
+                if key is not None:
+                    keys.add(key)
+
+        sortable: list[tuple[dt.date, str, DateKey]] = []
+        for key in keys:
+            try:
+                year, month, day = (
+                    int(key[0]),
+                    int(key[1]),
+                    int(key[2]),
+                )
+                date_value = dt.date(year, month, day)
+            except (TypeError, ValueError):
+                date_value = dt.date.min
+            try:
+                serial = self._serialize_date_key(key)
+            except Exception:
+                serial = str(key)
+            sortable.append((date_value, serial, key))
+
+        sortable.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in sortable]
+
+    def _calculate_duration_render_plan(
+        self,
+        daily_minutes: float,
+        target_date: DateKey | None = None,
+    ) -> tuple[dict[DateKey, list[_DurationOverflowSlice]], dict[tuple[DateKey, int], float | None]]:
+        if daily_minutes <= 0:
+            daily_minutes = 1.0
+
+        sorted_keys = self._sorted_day_cell_keys(
+            [target_date] if target_date and target_date not in self._day_cells else None
+        )
+
+        overflow_map: dict[DateKey, list[_DurationOverflowSlice]] = {
+            key: [] for key in sorted_keys
+        }
+        local_slice_map: dict[tuple[DateKey, int], float | None] = {}
+        carries: list[_DurationOverflowCarry] = []
+
+        for date_key in sorted_keys:
+            next_carries: list[_DurationOverflowCarry] = []
+
+            for carry in carries:
+                remaining = max(float(carry.remaining_minutes), 0.0)
+                if remaining <= 0:
+                    continue
+                slice_minutes = min(remaining, daily_minutes)
+                if slice_minutes > 0:
+                    overflow_map.setdefault(date_key, []).append(
+                        _DurationOverflowSlice(
+                            assignment=carry.assignment,
+                            index=carry.index,
+                            minutes=slice_minutes,
+                            source_date=carry.source_date,
+                        )
+                    )
+                remaining_after = max(remaining - slice_minutes, 0.0)
+                if remaining_after > 1e-6:
+                    next_carries.append(
+                        _DurationOverflowCarry(
+                            assignment=carry.assignment,
+                            index=carry.index,
+                            remaining_minutes=remaining_after,
+                            source_date=carry.source_date,
+                        )
+                    )
+
+            assignments_for_day = self._calendar_assignments.get(date_key, [])
+            for idx, assignment in enumerate(assignments_for_day):
+                duration = self._get_assignment_duration(assignment)
+                if duration is None:
+                    local_slice_map[(date_key, idx)] = None
+                    continue
+
+                segments = list(self._iter_duration_segments(duration, daily_minutes))
+                if segments:
+                    first_slice = segments[0]
+                    local_slice_map[(date_key, idx)] = first_slice
+                    remaining = max(duration - first_slice, 0.0)
+                else:
+                    local_slice_map[(date_key, idx)] = 0.0
+                    remaining = 0.0
+
+                if remaining > 1e-6:
+                    next_carries.append(
+                        _DurationOverflowCarry(
+                            assignment=assignment,
+                            index=idx,
+                            remaining_minutes=remaining,
+                            source_date=date_key,
+                        )
+                    )
+
+            carries = next_carries
+
+        return overflow_map, local_slice_map
 
     def _update_day_cell_duration_canvas(
         self,
